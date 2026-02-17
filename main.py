@@ -753,12 +753,29 @@ async def smart_chat_router(
                 }
             
             # ✅ READ FILE CONTENT
+            normalized_doc_type = None
+
+            if doc_type:
+                dt = doc_type.strip().lower()
+
+                if "aadhaar" in dt:
+                    normalized_doc_type = "aadhaar"
+                elif "pan" in dt:
+                    normalized_doc_type = "pan_card"
+                elif "bank" in dt:
+                    normalized_doc_type = "bank_passbook"
+                else:
+                    normalized_doc_type = dt
+            else:
+                normalized_doc_type = None
+
             file_uploaded = {
                 "content": file.file.read(),
                 "name": file.filename,
                 "extension": file_extension,
-                "doc_type": doc_type
+                "doc_type": normalized_doc_type
             }
+
 
         # -----------------------------
         # 1. SUBMIT
