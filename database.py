@@ -496,18 +496,31 @@ class DatabaseManager:
 
     def verify_pan_aadhaar_link(self, aadhaar_no: str, pan_no: str) -> Optional[Dict]:
         """
-        Verify if PAN is linked with Aadhaar and fetch income bracket
+        Verify if PAN is linked with Aadhaar
         """
         try:
             cursor = self._get_cursor()
+
+            # Normalize before DB check
+            aadhaar_no = str(aadhaar_no).strip()
+            pan_no = str(pan_no).strip().upper()
+
+            print("🔎 DB CHECK -> Aadhaar:", aadhaar_no)
+            print("🔎 DB CHECK -> PAN:", pan_no)
+
             cursor.execute("""
-                SELECT TOP 1 AadhaarNo, PanNumber, AnnualIncome
+                SELECT TOP 1 *
                 FROM AadhaarCardDetails
                 WHERE AadhaarNo = %s
-                AND PanNumber = %s
+                AND PANNo = %s
+                AND IsPANNoAttached = 1
             """, (aadhaar_no, pan_no))
 
-            return cursor.fetchone()
+            result = cursor.fetchone()
+
+            print("🔎 DB RESULT:", result)
+
+            return result
 
         except Exception as e:
             logger.error(f"Error verifying PAN-Aadhaar link: {e}")
