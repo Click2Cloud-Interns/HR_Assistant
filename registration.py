@@ -3,6 +3,7 @@ Ladki Bahin Yojana - Complete Application System (Language Selection: English/Hi
 FastAPI Backend with OCR, AI Parsing, Azure Blob Storage, and Database Integration
 """
 
+from attrs import fields
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.responses import JSONResponse
 import os
@@ -786,19 +787,40 @@ class DocumentIntelligence:
     
     def validate_document_type(self, raw_text: str, document_type: str, user_language: str = "english") -> tuple:
         """Validate if the uploaded document matches the expected document type"""
+
         if document_type == "photograph":
             return True, None
-        
+
+        text_lower = raw_text.lower()
+
+        # ✅ Special validation for PAN using PAN format instead of keywords
+        if document_type == "pan_card":
+            print("RAW OCR PAN TEXT:", raw_text)
+            # Normalize OCR text (remove spaces, newlines, tabs)
+            cleaned_text = re.sub(r'\s+', '', raw_text.upper())
+
+            # Strict PAN pattern
+            pan_match = re.search(r'[A-Z]{5}[0-9]{4}[A-Z]', cleaned_text)
+            if pan_match:
+                return True, None
+
+            # Relaxed fallback (handles minor OCR distortions)
+            possible_matches = re.findall(r'[A-Z0-9]{10}', cleaned_text)
+            for candidate in possible_matches:
+                if re.match(r'^[A-Z]{5}[0-9]{4}[A-Z]$', candidate):
+                    return True, None
+
+            return False, get_translated_message("invalid_pan", user_language)
+
+        # ✅ For other documents, keep keyword validation
         keywords = self.validation_keywords.get(document_type, [])
         if not keywords:
             return True, None
-        
-        text_lower = raw_text.lower()
-        
+
         for keyword in keywords:
             if keyword.lower() in text_lower:
                 return True, None
-        
+
         error_messages = {
             "aadhaar": get_translated_message("invalid_aadhaar", user_language),
             "bank_passbook": get_translated_message("invalid_bank_passbook", user_language),
@@ -809,7 +831,9 @@ class DocumentIntelligence:
             "birth_certificate": get_translated_message("invalid_birth_certificate", user_language),
             "school_leaving": get_translated_message("invalid_school_leaving", user_language)
         }
+
         return False, error_messages.get(document_type, "Invalid Document!")
+
     
     def validate_name(self, extracted_name: str, expected_name: str, user_language: str = "english") -> tuple:
         """Validate if the name extracted from document matches the expected name"""
@@ -973,7 +997,7 @@ Return JSON only."""
         except Exception as e:
             logger.error(f"AI parsing error: {e}")
             return self.basic_extract(text, document_type)
-    
+
     def basic_extract(self, text: str, document_type: str) -> Dict[str, Any]:
         """Basic regex extraction as fallback"""
         result = {}
@@ -1609,6 +1633,16 @@ def get_bot_response(session_id: str, user_message: str = "", file_uploaded: dic
             fields = result.get("fields", {})
             pan_number = fields.get("pan_number", "")
 
+            # ✅ Fallback: If AI failed, extract directly from OCR using regex
+            if not pan_number:
+                raw_text = result.get("raw_text", "")
+                pan_match = re.search(r'\b[A-Z]{5}[0-9]{4}[A-Z]\b', raw_text.upper())
+                if pan_match:
+                    pan_number = pan_match.group(0)
+                    fields["pan_number"] = pan_number
+                    print("⚡ PAN extracted via regex fallback:", pan_number)
+
+
             # 🔒 Basic PAN format validation (extra security layer)
             if not pan_number or not re.match(r'^[A-Z]{5}[0-9]{4}[A-Z]$', pan_number):
                 session["step"] = "upload_pan_card"
@@ -1636,7 +1670,7 @@ def get_bot_response(session_id: str, user_message: str = "", file_uploaded: dic
             session["extracted_data"]["pan_number"] = pan_number
 
             # 🔗 Aadhaar-PAN Linking Check
-            aadhaar_number = session["extracted_data"].get("aadhaar_number", "")
+            aadhaar_number = re.sub(r'\D', '', session["extracted_data"].get("aadhaar_number", ""))
             is_linked = False
             db_result = None
 
@@ -2586,4 +2620,3 @@ async def health_check():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=5000)
-
