@@ -429,12 +429,107 @@ Application process ended.
 
 Document is being verified...""",
 
-    "confirmation_yes_correction": {
-    "english": "Please type 'YES' or 'CORRECTION':",
-    "marathi": "कृपया 'होय' किंवा 'दुरुस्ती' टाइप करा:",
-    "hindi": "कृपया 'हाँ' या 'सुधार' टाइप करें:"
+    "confirmation_yes_correction": """Please type 'YES' or 'CORRECTION':""",
+
+    "income_selection": """Please select your annual family income:
+
+1. Less than ₹1 Lakh
+2. ₹1-2 Lakh
+3. ₹2-2.5 Lakh
+4. More than ₹2.5 Lakh
+
+Please enter the number (1-4):""",
+
+    "eligibility_success": """Congratulations! 🎉
+You are eligible for Ladki Bahin Yojana.
+
+Please provide your bank details in the following format:
+
+Bank Name, Account Number, IFSC Code
+
+Example:
+State Bank of India, 12345678901234, SBIN0001234""",
+
+    "eligibility_failure": """Sorry.
+
+Based on the information provided, you are currently not eligible for this scheme.
+
+Reason: {reason}
+
+You can contact the helpline for more information.
+
+════════════════════════════════════════════════════
+Thank you.""",
+
+    "bank_details_invalid_format": """Invalid bank details. Please enter in correct format:
+
+Bank Name, Account Number, IFSC Code
+
+Example:
+State Bank of India, 12345678901234, SBIN0001234
+
+Note:
+- Account number must be 9-18 digits
+- IFSC code must be 11 characters (e.g. SBIN0001234)""",
+
+    "bank_details_confirmed": """Bank details received:
+- Bank: {bank}
+- Account: {account}
+- IFSC: {ifsc}
+
+Verifying details...""",
+
+    "final_confirmation": """════════════════════════════════════════════════════
+APPLICATION SUMMARY - Please verify
+════════════════════════════════════════════════════
+
+Personal Details:
+- Name: {name}
+- Date of Birth: {dob} (Age: {age})
+- Aadhaar: {aadhaar}
+- Pan : {pan_card}
+
+Contact Details:
+- Address: {address}
+
+Bank Details:
+- Bank: {bank}
+- Account: {account}
+- IFSC: {ifsc}
+
+Income Details:
+- Annual Income: {income}
+
+════════════════════════════════════════════════════
+
+Do you want to submit this information?
+
+Type होय to submit or नाही to cancel:""",
+
+    "final_submitted": """Your application has been submitted successfully!
+
+════════════════════════════════════════════════════
+Your Application Number: {app_id}
+════════════════════════════════════════════════════
+
+You can check your application status using:
+- Application Number
+- Aadhaar Number
+
+Thank you.
+Ladki Bahin Yojana – For empowered women.""",
+
+    "final_cancelled": """Application cancelled.
+
+What would you like to do?
+
+1. Re-enter bank details
+2. Re-select income bracket
+3. Exit
+
+Please enter the number (1-3):"""
 }
-}
+
 
 # ============================================
 # DYNAMIC TRANSLATION FUNCTION
@@ -452,6 +547,13 @@ def get_translated_message(message_key: str, language: str, **kwargs) -> str:
     Returns:
         Translated message with formatted variables
     """
+    base_message = MESSAGE_TEMPLATES.get(message_key, MESSAGE_TEMPLATES["error"])
+    
+    # ✅ Handle dict-type templates (hardcoded per-language strings)
+    if isinstance(base_message, dict):
+        base_message = base_message.get(language) or base_message.get("english", "")
+        return base_message.format(**kwargs) if kwargs else base_message
+
     # If English, return directly
     if language == "english" or language not in ["marathi", "hindi"]:
         base_message = MESSAGE_TEMPLATES.get(message_key, MESSAGE_TEMPLATES["error"])
@@ -528,8 +630,12 @@ def get_translated_message(message_key: str, language: str, **kwargs) -> str:
             try:
                 return base_message.format(**kwargs)
             except KeyError as ke:
-                logger.error(f"Missing key in template: {ke}")
-                return base_message
+                logger.error(f"Missing key in template: {ke} — kwargs provided: {list(kwargs.keys())}")
+                # Partial format: replace only keys we have, leave others as-is
+                result = base_message
+                for k, v in kwargs.items():
+                    result = result.replace("{" + k + "}", str(v))
+                return result
         return base_message
     except Exception as format_error:
         logger.error(f"Formatting error in fallback: {format_error}")
@@ -868,27 +974,72 @@ class DocumentIntelligence:
 
     
     def validate_name(self, extracted_name: str, expected_name: str, user_language: str = "english") -> tuple:
-        """Validate if the name extracted from document matches the expected name"""
+        """Validate if the name extracted from document matches the expected name.
+        
+        Handles real-world mismatches:
+        - Spelling variants:  Rajeshree vs RAJASHREE
+        - Middle name on PAN: RAJASHREE RAJ MAHAJAN vs Rajeshree Mahajan
+        - Case differences:   MAHAJAN vs Mahajan
+        """
         if not extracted_name or not expected_name:
             return True, None
-        
+
         def normalize_name(name):
+            """Lowercase, strip, collapse spaces."""
             return ' '.join(name.lower().strip().split())
-        
-        extracted_normalized = normalize_name(extracted_name)
-        expected_normalized = normalize_name(expected_name)
-        
-        extracted_words = set(extracted_normalized.split())
-        expected_words = set(expected_normalized.split())
-        
-        if extracted_words == expected_words:
+
+        def name_words(name):
+            """Return list of words in normalized name."""
+            return normalize_name(name).split()
+
+        def fuzzy_word_match(w1: str, w2: str) -> bool:
+            """True if two words are close enough (handles Rajeshree/Rajashree)."""
+            if w1 == w2:
+                return True
+            # Allow 1-character difference for words longer than 4 chars
+            if len(w1) > 4 and len(w2) > 4:
+                # Count character differences
+                longer  = max(w1, w2, key=len)
+                shorter = min(w1, w2, key=len)
+                if len(longer) - len(shorter) <= 1:
+                    # Check edit distance is just 1 (simple substitution/insertion)
+                    diffs = sum(a != b for a, b in zip(shorter.ljust(len(longer)), longer))
+                    if diffs <= 1:
+                        return True
+            return False
+
+        extracted_words = name_words(extracted_name)
+        expected_words  = name_words(expected_name)
+
+        # --- Rule 1: All expected words must appear (fuzzy) in extracted words ---
+        # This handles PAN having an extra middle name
+        matched = 0
+        for exp_w in expected_words:
+            for ext_w in extracted_words:
+                if fuzzy_word_match(exp_w, ext_w):
+                    matched += 1
+                    break
+
+        if matched == len(expected_words):
             return True, None
-        
-        common_words = extracted_words.intersection(expected_words)
-        if len(common_words) >= max(1, len(expected_words) * 0.7):
+
+        # --- Rule 2: Relaxed — at least 50% of expected words match (fuzzy) ---
+        # Catches cases where even the Aadhaar name has a typo vs PAN
+        if matched >= max(1, len(expected_words) * 0.5):
             return True, None
-        
-        error_msg = get_translated_message("invalid_name_mismatch", user_language, extracted=extracted_name, expected=expected_name)
+
+        # --- Rule 3: Last name must match (minimum bar) ---
+        # If the last word of both names matches, accept it
+        if expected_words and extracted_words:
+            if fuzzy_word_match(expected_words[-1], extracted_words[-1]):
+                return True, None
+
+        error_msg = get_translated_message(
+            "invalid_name_mismatch",
+            user_language,
+            extracted=extracted_name,
+            expected=expected_name
+        )
         return False, error_msg
     
     def parse_with_ai(self, text: str, document_type: str) -> Dict[str, Any]:
@@ -1099,7 +1250,11 @@ Return JSON only."""
         
         structured_data = self.parse_with_ai(raw_text, document_type)
         
-        if expected_name and document_type != "photograph":
+        # Skip name validation for photograph and PAN card
+        # PAN often contains middle/father's name not present on Aadhaar
+        SKIP_NAME_VALIDATION = {"photograph", "pan_card"}
+        
+        if expected_name and document_type not in SKIP_NAME_VALIDATION:
             extracted_name = self.get_name_field(structured_data, document_type)
             is_valid_name, name_error = self.validate_name(extracted_name, expected_name, user_language)
             if not is_valid_name:
@@ -1756,27 +1911,16 @@ def get_bot_response(session_id: str, user_message: str = "", file_uploaded: dic
                 pass  # If DB value malformed, ignore and continue
 
             # ✅ All checks passed → Proceed
-            session["step"] = "collect_mobile"
+            # ✅ All checks passed → Go directly to Phase 4
+            session["step"] = "income_selection"
 
             pan_linked_msg = get_translated_message("pan_aadhaar_linked", user_language)
-
-            aadhaar_msg = get_translated_message(
-                "aadhaar_prefilled",
-                user_language,
-                name=session["personal_info"].get("name", ""),
-                age=session["personal_info"].get("age", ""),
-                dob=session["personal_info"].get("dob", ""),
-                address=session["contact_info"].get("address", ""),
-                district=session.get("domicile_info", {}).get("district", "")
-            )
-
-            doc_msg = get_translated_message("document_info", user_language)
-            mobile_msg = get_translated_message("mobile_number_prompt", user_language)
+            income_msg = get_translated_message("income_selection", user_language)
 
             return {
-                "response": f"{pan_linked_msg}\n\n{aadhaar_msg}\n\n{doc_msg}\n\n{mobile_msg}",
+                "response": f"{pan_linked_msg}\n\n{income_msg}",
                 "type": "success",
-                "waiting_for": "mobile_input"
+                "waiting_for": "income_selection"
             }
 
         else:
@@ -1785,7 +1929,260 @@ def get_bot_response(session_id: str, user_message: str = "", file_uploaded: dic
                 "type": "text",
                 "waiting_for": "pan_card_upload"
             }
+    
+    # ═══════════════════════════════════════════════════════════════
+    # 🟣 PHASE 4 – INCOME SELECTION & ELIGIBILITY CHECK
+    # ═══════════════════════════════════════════════════════════════
 
+    elif current_step == "income_selection":
+        income_map = {
+            "1": {"label": "₹1 लाखांपेक्षा कमी",  "max": 100000,        "eligible": True},
+            "2": {"label": "₹1-2 लाख",              "max": 200000,        "eligible": True},
+            "3": {"label": "₹2-2.5 लाख",            "max": 250000,        "eligible": True},
+            "4": {"label": "₹2.5 लाखांपेक्षा जास्त","max": float('inf'), "eligible": False},
+        }
+
+        selected = income_map.get(user_message.strip())
+
+        if selected:
+            session["income_info"]["annual_income_display"] = selected["label"]
+            session["income_info"]["annual_income"] = selected["max"] if selected["eligible"] else 300000
+            session["income_info"]["source"] = "user_selected"
+
+            if selected["eligible"]:
+                session["step"] = "collect_bank_details"
+                response = {
+                    "response": get_translated_message("eligibility_success", user_language),
+                    "type": "success",
+                    "waiting_for": "bank_details"
+                }
+            else:
+                session["step"] = "completed"
+                response = {
+                    "response": get_translated_message(
+                        "eligibility_failure",
+                        user_language,
+                        reason="वार्षिक उत्पन्न ₹2.50 लाखांपेक्षा जास्त आहे / Annual income exceeds ₹2.50 Lakh"
+                    ),
+                    "type": "error",
+                    "waiting_for": "none"
+                }
+        else:
+            response = {
+                "response": get_translated_message("invalid_option", user_language) + "\n\n" +
+                            get_translated_message("income_selection", user_language),
+                "type": "error",
+                "waiting_for": "income_selection"
+            }
+
+    # ═══════════════════════════════════════════════════════════════
+    # 🟣 PHASE 5 – BANK DETAILS COLLECTION & VALIDATION
+    # ═══════════════════════════════════════════════════════════════
+
+    elif current_step == "collect_bank_details":
+        if not user_message.strip():
+            response = {
+                "response": get_translated_message("eligibility_success", user_language),
+                "type": "text",
+                "waiting_for": "bank_details"
+            }
+        else:
+            parts = [p.strip() for p in user_message.split(',')]
+
+            if len(parts) >= 3:
+                bank_name    = parts[0].strip()
+                account_number = re.sub(r'\s+', '', parts[1])
+                ifsc_code    = parts[2].strip().upper().replace(" ", "")
+
+                # Validations
+                account_valid = account_number.isdigit() and 9 <= len(account_number) <= 18
+                ifsc_valid    = bool(re.match(r'^[A-Z]{4}0[A-Z0-9]{6}$', ifsc_code))
+                bank_valid    = len(bank_name) >= 3
+
+                if account_valid and ifsc_valid and bank_valid:
+                    # Store bank info
+                    session["bank_info"] = {
+                        "bank_name":      bank_name,
+                        "account_number": account_number,
+                        "ifsc":           ifsc_code,
+                        "source":         "manual_input"
+                    }
+
+                    # Move to final confirmation
+                    session["step"] = "final_confirmation"
+
+                    name    = session["personal_info"].get("name", "N/A")
+                    dob     = session["personal_info"].get("dob", "N/A")
+                    age     = session["personal_info"].get("age", "N/A")
+                    mobile  = session["contact_info"].get("mobile", "N/A")
+                    address = session["contact_info"].get("address", "N/A")
+                    aadhaar_masked  = mask_aadhaar(session["extracted_data"].get("aadhaar_number", ""))
+                    account_masked  = mask_account(account_number)
+                    income_display  = session["income_info"].get("annual_income_display", "N/A")
+
+                    response = {
+                        "response": get_translated_message(
+                            "final_confirmation",
+                            user_language,
+                            name=name,
+                            dob=dob,
+                            age=age,
+                            aadhaar=aadhaar_masked,
+                            pan_card=session["extracted_data"].get("pan_number", "N/A"),
+                            address=address,
+                            bank=bank_name,
+                            account=account_masked,
+                            ifsc=ifsc_code,
+                            income=income_display
+                        ),
+                        "type": "info",
+                        "waiting_for": "final_confirmation"
+                    }
+                else:
+                    # Build specific error message
+                    errors = []
+                    if not bank_valid:
+                        errors.append("- Bank name is too short")
+                    if not account_valid:
+                        errors.append(f"- Account number must be 9-18 digits (entered: {len(account_number)} chars)")
+                    if not ifsc_valid:
+                        errors.append(f"- IFSC code must match format XXXX0XXXXXX (entered: {ifsc_code})")
+
+                    error_detail = "\n".join(errors)
+                    response = {
+                        "response": get_translated_message("bank_details_invalid_format", user_language) +
+                                    f"\n\nErrors:\n{error_detail}",
+                        "type": "error",
+                        "waiting_for": "bank_details"
+                    }
+            else:
+                response = {
+                    "response": get_translated_message("bank_details_invalid_format", user_language),
+                    "type": "error",
+                    "waiting_for": "bank_details"
+                }
+
+    # ═══════════════════════════════════════════════════════════════
+    # 🟣 PHASE 6 – FINAL CONFIRMATION & SUBMISSION
+    # ═══════════════════════════════════════════════════════════════
+
+    elif current_step == "final_confirmation":
+        yes_words = ["yes", "होय", "हां", "y", "YES", "HOY", "हाँ", "hoy","Ho","ho"]
+        no_words  = ["no",  "नाही", "नहीं", "n", "NO", "NAHI", "nahi"]
+
+        user_input = user_message.strip().lower()
+
+        if user_input in [w.lower() for w in yes_words]:
+            # Submit application
+            aadhaar_number = session["extracted_data"].get("aadhaar_number", "")
+
+            # Check duplicate
+            if aadhaar_number and db_manager and db_manager.check_aadhaar_exists(aadhaar_number):
+                session["step"] = "completed"
+                response = {
+                    "response": get_translated_message("aadhaar_exists", user_language),
+                    "type": "error",
+                    "waiting_for": "none"
+                }
+            else:
+                application_id = session.get("application_id")
+
+                if db_manager:
+                    try:
+                        dob_date     = parse_date(session["personal_info"].get("dob", ""))
+                        annual_income = float(session["income_info"].get("annual_income", 0))
+
+                        beneficiary_data = {
+                            "username":        session["contact_info"].get("mobile", ""),
+                            "password_hash":   "",
+                            "aadhaar_number":  aadhaar_number,
+                            "full_name":       session["personal_info"].get("name", ""),
+                            "date_of_birth":   dob_date,
+                            "gender":          "F",
+                            "mobile_number":   session["contact_info"].get("mobile", ""),
+                            "email":           session["contact_info"].get("email", ""),
+                            "address":         session["contact_info"].get("address", ""),
+                            "district":        session.get("domicile_info", {}).get("district", ""),
+                            "taluka":          session.get("domicile_info", {}).get("taluka", ""),
+                            "village":         session.get("domicile_info", {}).get("village", ""),
+                            "annual_income":   annual_income,
+                            "bank_account_no": session["bank_info"].get("account_number", ""),
+                            "bank_ifsc":       session["bank_info"].get("ifsc", "")
+                        }
+
+                        beneficiary_id = db_manager.save_beneficiary_application(beneficiary_data, application_id)
+                        session["beneficiary_id"] = beneficiary_id
+                        logger.info(f"✅ Application saved: {application_id}, beneficiary: {beneficiary_id}")
+
+                    except Exception as e:
+                        logger.error(f"❌ Database save error: {e}")
+
+                session["step"]         = "completed"
+                session["status"]       = "SUBMITTED"
+                session["submitted_at"] = datetime.now().isoformat()
+
+                response = {
+                    "response": get_translated_message(
+                        "final_submitted",
+                        user_language,
+                        app_id=application_id
+                    ),
+                    "type": "success",
+                    "waiting_for": "none",
+                    "application_id": application_id
+                }
+
+        elif user_input in [w.lower() for w in no_words]:
+            # User said NO — show options
+            session["step"] = "final_cancelled"
+            response = {
+                "response": get_translated_message("final_cancelled", user_language),
+                "type": "info",
+                "waiting_for": "cancel_option"
+            }
+        else:
+            response = {
+                "response": "कृपया 'होय' किंवा 'नाही' टाइप करा. / Please type YES or NO.",
+                "type": "error",
+                "waiting_for": "final_confirmation"
+            }
+
+    elif current_step == "final_cancelled":
+        choice = user_message.strip()
+        if choice == "1":
+            # Re-enter bank details
+            session["step"] = "collect_bank_details"
+            session["bank_info"] = {}
+            response = {
+                "response": get_translated_message("eligibility_success", user_language),
+                "type": "info",
+                "waiting_for": "bank_details"
+            }
+        elif choice == "2":
+            # Re-select income
+            session["step"] = "income_selection"
+            session["income_info"] = {}
+            session["bank_info"]   = {}
+            response = {
+                "response": get_translated_message("income_selection", user_language),
+                "type": "info",
+                "waiting_for": "income_selection"
+            }
+        elif choice == "3":
+            session["step"] = "completed"
+            response = {
+                "response": "धन्यवाद. लाडकी बहिण योजना – सशक्त महिलांसाठी.",
+                "type": "info",
+                "waiting_for": "none"
+            }
+        else:
+            response = {
+                "response": get_translated_message("final_cancelled", user_language),
+                "type": "error",
+                "waiting_for": "cancel_option"
+            }
+
+    
     # ✅ STEP 1: COLLECT MOBILE (First step)
     elif  current_step == "collect_mobile":
         # Generate application ID if not exists
