@@ -365,15 +365,37 @@ Use the plus button and select 'Aadhaar Card' from the dropdown.""",
 
     "aadhaar_verification_started": """Your information verification has started...""",
 
-    "aadhaar_details_retrieved": """Aadhaar details retrieved:
+    "aadhaar_details_retrieved": {
+        "english": """Aadhaar details retrieved:
 
-Name: {name}
-Date of Birth: {dob}
-Address: {address}
+    Name: {name}
+    Date of Birth: {dob}
+    Address: {address}
 
-Is this information correct?
+    Is this information correct?
 
-Type YES if correct or CORRECTION if you need to make changes:""",
+    Type YES if correct or CORRECTION if you need to make changes:""",
+
+        "marathi": """आधार तपशील प्राप्त झाले:
+
+    नाव: {name}
+    जन्मतारीख: {dob}
+    पत्ता: {address}
+
+    ही माहिती योग्य आहे का?
+
+    योग्य असल्यास 'होय' टाइप करा किंवा बदल आवश्यक असल्यास 'दुरुस्ती' टाइप करा:""",
+
+        "hindi": """आधार विवरण प्राप्त हुआ:
+
+    नाम: {name}
+    जन्म तिथि: {dob}
+    पता: {address}
+
+    क्या यह जानकारी सही है?
+
+    यदि सही है तो 'हाँ' टाइप करें या बदलाव के लिए 'सुधार' टाइप करें:"""
+    },
 
     "aadhaar_correction_prompt": """Please specify what needs to be corrected and we will assist you.""",
 
@@ -407,7 +429,11 @@ Application process ended.
 
 Document is being verified...""",
 
-    "confirmation_yes_correction": """Please type 'YES' or 'CORRECTION':"""
+    "confirmation_yes_correction": {
+    "english": "Please type 'YES' or 'CORRECTION':",
+    "marathi": "कृपया 'होय' किंवा 'दुरुस्ती' टाइप करा:",
+    "hindi": "कृपया 'हाँ' या 'सुधार' टाइप करें:"
+}
 }
 
 # ============================================
@@ -438,7 +464,13 @@ def get_translated_message(message_key: str, language: str, **kwargs) -> str:
         return base_message.format(**kwargs) if kwargs else base_message
     
     try:
-        base_message = MESSAGE_TEMPLATES.get(message_key)
+        template = MESSAGE_TEMPLATES.get(message_key)
+
+        # If template is language-specific dict
+        if isinstance(template, dict):
+            base_message = template.get(language, template.get("english"))
+        else:
+            base_message = template
         
         # If message key doesn't exist, return error
         if base_message is None:
@@ -1439,24 +1471,18 @@ def get_bot_response(session_id: str, user_message: str = "", file_uploaded: dic
                 session["step"] = "confirm_aadhaar_details"
                 
                 # Dynamic confirmation text based on language
-                if user_language == "marathi":
-                    confirmation_text = "योग्य असल्यास 'होय' टाइप करा किंवा बदल आवश्यक असल्यास 'दुरुस्ती' टाइप करा:"
-                elif user_language == "hindi":
-                    confirmation_text = "यदि जानकारी सही है तो 'हाँ' टाइप करें या बदलाव के लिए 'सुधार' टाइप करें:"
-                else:
-                    confirmation_text = "Type YES if correct or CORRECTION if you need to make changes:"
-
                 response = {
-                    "response": f"""Aadhaar details retrieved:
-
-                Name: {fields.get("name", "N/A")}
-                Date of Birth: {fields.get("dob", "N/A")}
-                Address: {fields.get("address", "N/A")}
-
-                {confirmation_text}""",
+                    "response": get_translated_message(
+                        "aadhaar_details_retrieved",
+                        user_language,
+                        name=fields.get("name", "N/A"),
+                        dob=fields.get("dob", "N/A"),
+                        address=fields.get("address", "N/A")
+                    ),
                     "type": "success",
                     "waiting_for": "aadhaar_confirmation"
                 }
+
         else:
             response = {
                 "response": get_translated_message("dpip_accepted", user_language),
@@ -1469,8 +1495,8 @@ def get_bot_response(session_id: str, user_message: str = "", file_uploaded: dic
 
         user_input = user_message.strip().lower()
 
-        yes_words = ["yes", "होय", "हां", "y"]
-        correction_words = ["correction", "दुरुस्ती", "सुधार"]
+        yes_words = ["yes", "ho" , "y", "होय", "हो", "हां", "haan"]
+        correction_words = ["correction", "durusti", "Durusti","दुरुस्ती", "सुधार"]
 
         if user_input in yes_words:
             # User confirmed details are correct
@@ -1534,64 +1560,89 @@ def get_bot_response(session_id: str, user_message: str = "", file_uploaded: dic
         temp_data = session.get("temp_aadhaar_data", {})
         fields = temp_data.get("fields", {})
 
-            # If user is telling which field to correct
+        # If user is telling which field to correct
         if not session.get("correction_field"):
 
-                msg = user_message.lower()
+            msg = user_message.strip().lower()
 
-                if "name" in msg:
-                    session["correction_field"] = "name"
-                elif "dob" in msg or "birth" in msg:
-                    session["correction_field"] = "dob"
-                elif "address" in msg:
-                    session["correction_field"] = "address"
-                else:
-                    response = {
-                        "response": "Please specify what to correct: name / dob / address",
-                        "type": "error",
-                        "waiting_for": "correction_field"
-                    }
-                    session["conversation"].append({"role": "assistant", "message": response["response"]})
-                    return response
+            # Normalize Marathi/Hindi/English (remove punctuation)
+            msg = re.sub(r'[^\w\u0900-\u097F]', '', msg)
 
-                response = {
+            name_words = ["name", "Name", "नाव", "naam"]
+            dob_words = ["dob", "DOB", "dateofbirth", "date of birth", "birth", "जन्मतारीख", "जन्म", "जन्मतिथि"]
+            address_words = ["address", "Address", "पत्ता", "पता"]
+
+            if any(word in msg for word in name_words):
+                session["correction_field"] = "name"
+
+            elif any(word in msg for word in dob_words):
+                session["correction_field"] = "dob"
+
+            elif any(word in msg for word in address_words):
+                session["correction_field"] = "address"
+
+            else:
+                return {
+                    "response": get_translated_message("aadhaar_correction_prompt", user_language),
+                    "type": "error",
+                    "waiting_for": "correction_field"
+                }
+
+            # Ask for corrected value (language-safe)
+            if user_language == "marathi":
+                field_label = {
+                    "name": "नाव",
+                    "dob": "जन्मतारीख",
+                    "address": "पत्ता"
+                }.get(session["correction_field"], "माहिती")
+
+                return {
+                    "response": f"कृपया योग्य {field_label} टाइप करा:",
+                    "type": "info",
+                    "waiting_for": "correction_value"
+                }
+
+            elif user_language == "hindi":
+                field_label = {
+                    "name": "नाम",
+                    "dob": "जन्म तिथि",
+                    "address": "पता"
+                }.get(session["correction_field"], "जानकारी")
+
+                return {
+                    "response": f"कृपया सही {field_label} दर्ज करें:",
+                    "type": "info",
+                    "waiting_for": "correction_value"
+                }
+
+            else:
+                return {
                     "response": f"Please enter corrected {session['correction_field']}:",
                     "type": "info",
                     "waiting_for": "correction_value"
                 }
 
+        # If user entered corrected value
         else:
-                # User has entered new value
-                field = session["correction_field"]
-                fields[field] = user_message.strip()
+            field = session["correction_field"]
+            fields[field] = user_message.strip()
 
-                # Update temp data
-                session["temp_aadhaar_data"]["fields"] = fields
+            session["temp_aadhaar_data"]["fields"] = fields
+            session.pop("correction_field", None)
 
-                # Clear correction field
-                session.pop("correction_field", None)
+            session["step"] = "confirm_aadhaar_details"
 
-                # Show updated data again
-                if user_language == "marathi":
-                    confirmation_text = "योग्य असल्यास 'होय' टाइप करा किंवा बदल आवश्यक असल्यास 'दुरुस्ती' टाइप करा:"
-                elif user_language == "hindi":
-                    confirmation_text = "यदि जानकारी सही है तो 'हाँ' टाइप करें या बदलाव के लिए 'सुधार' टाइप करें:"
-                else:
-                    confirmation_text = "Type YES if correct or CORRECTION if you need to make changes:"
-
-                response = {
-                    "response": f"""Aadhaar details retrieved:
-
-                Name: {fields.get("name", "N/A")}
-                Date of Birth: {fields.get("dob", "N/A")}
-                Address: {fields.get("address", "N/A")}
-
-                {confirmation_text}""",
-                    "type": "success",
-                    "waiting_for": "aadhaar_confirmation"
-                }
-
-                session["step"] = "confirm_aadhaar_details"
+            return {
+                "response": get_translated_message(
+                    "aadhaar_details_retrieved",
+                    user_language,
+                    name=fields.get("name", "N/A"),
+                    dob=fields.get("dob", "N/A"),
+                    address=fields.get("address", "N/A")
+                ),
+                "type": "success",
+                "waiting_for": "aadhaar_confirmation"
+            }
 
     # ✅ STEP 0.8: UPLOAD PAN CARD
     elif current_step == "upload_pan_card":
