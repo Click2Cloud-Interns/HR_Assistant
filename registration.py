@@ -409,9 +409,9 @@ Use the plus button and select 'PAN Card' from the dropdown.""",
 
     "pan_verification_started": """Your PAN number verification is in progress...""",
 
-    "pan_aadhaar_linked": """Your Aadhaar and PAN are successfully linked.
+    "pan_aadhaar_linked": """आपला आधार आणि पॅन क्रमांक यशस्वीरीत्या लिंक आहेत.
 
-Proceeding to next step...""",
+पुढील टप्प्याकडे जात आहोत...""",
 
     "pan_aadhaar_not_linked": """Your Aadhaar and PAN are not linked.
 
@@ -2077,75 +2077,22 @@ def get_bot_response(session_id: str, user_message: str = "", file_uploaded: dic
             aadhaar_number = session["extracted_data"].get("aadhaar_number", "")
 
             # Check duplicate
-            if aadhaar_number and db_manager and db_manager.check_aadhaar_exists(aadhaar_number):
-                session["step"] = "completed"
-                response = {
-                    "response": get_translated_message("aadhaar_exists", user_language),
-                    "type": "error",
-                    "waiting_for": "none"
-                }
-            else:
-                application_id = session.get("application_id")
-
-                if db_manager:
-                    try:
-                        dob_date     = parse_date(session["personal_info"].get("dob", ""))
-                        annual_income = float(session["income_info"].get("annual_income", 0))
-
-                        beneficiary_data = {
-                            "username":        session["contact_info"].get("mobile", ""),
-                            "password_hash":   "",
-                            "aadhaar_number":  aadhaar_number,
-                            "full_name":       session["personal_info"].get("name", ""),
-                            "date_of_birth":   dob_date,
-                            "gender":          "F",
-                            "mobile_number":   session["contact_info"].get("mobile", ""),
-                            "email":           session["contact_info"].get("email", ""),
-                            "address":         session["contact_info"].get("address", ""),
-                            "district":        session.get("domicile_info", {}).get("district", ""),
-                            "taluka":          session.get("domicile_info", {}).get("taluka", ""),
-                            "village":         session.get("domicile_info", {}).get("village", ""),
-                            "annual_income":   annual_income,
-                            "bank_account_no": session["bank_info"].get("account_number", ""),
-                            "bank_ifsc":       session["bank_info"].get("ifsc", "")
-                        }
-
-                        beneficiary_id = db_manager.save_beneficiary_application(beneficiary_data, application_id)
-                        session["beneficiary_id"] = beneficiary_id
-                        logger.info(f"✅ Application saved: {application_id}, beneficiary: {beneficiary_id}")
-
-                    except Exception as e:
-                        logger.error(f"❌ Database save error: {e}")
-
-                session["step"]         = "completed"
-                session["status"]       = "SUBMITTED"
-                session["submitted_at"] = datetime.now().isoformat()
-
-                response = {
-                    "response": get_translated_message(
-                        "final_submitted",
-                        user_language,
-                        app_id=application_id
-                    ),
-                    "type": "success",
-                    "waiting_for": "none",
-                    "application_id": application_id
-                }
-
-        elif user_input in [w.lower() for w in no_words]:
-            # User said NO — show options
-            session["step"] = "final_cancelled"
+            application_id = session.get("application_id")
+            session["step"]         = "completed"
+            session["status"]       = "SUBMITTED"
+            session["submitted_at"] = datetime.now().isoformat()
+ 
             response = {
-                "response": get_translated_message("final_cancelled", user_language),
-                "type": "info",
-                "waiting_for": "cancel_option"
+                "response": get_translated_message(
+                    "final_submitted",
+                    user_language,
+                    app_id=application_id
+                ),
+                "type": "success",
+                "waiting_for": "none",
+                "application_id": application_id
             }
-        else:
-            response = {
-                "response": "कृपया 'होय' किंवा 'नाही' टाइप करा. / Please type YES or NO.",
-                "type": "error",
-                "waiting_for": "final_confirmation"
-            }
+ 
 
     elif current_step == "final_cancelled":
         choice = user_message.strip()
