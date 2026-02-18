@@ -247,7 +247,17 @@ class DatabaseManager:
         try:
             cursor = self._get_cursor()
             cursor.execute("""
-                SELECT TOP 1 *
+                SELECT TOP 1
+                    AadhaarNo,
+                    FullName,
+                    DateOfBirth,
+                    Gender,
+                    Address,
+                    City,
+                    State,
+                    Pincode,
+                    MobileNo,
+                    Email
                 FROM AadhaarCardDetails
                 WHERE AadhaarNo = %s
             """, (aadhaar_no,))
@@ -255,7 +265,6 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Error fetching Aadhaar details: {e}")
             return None
-
 
     def check_beneficiary_exists(self, beneficiary_id: int) -> bool:
         """Check if BeneficiaryId exists"""
