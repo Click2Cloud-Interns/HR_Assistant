@@ -950,6 +950,27 @@ class DocumentIntelligence:
 
             return False, get_translated_message("invalid_pan", user_language)
 
+                # ✅ Strict Aadhaar validation using Aadhaar number format
+        if document_type == "aadhaar":
+            print("RAW OCR AADHAAR TEXT:", raw_text)
+
+            # Normalize text (remove spaces, newlines)
+            cleaned_text = re.sub(r'\s+', '', raw_text)
+
+            # Strict Aadhaar pattern: 12 digits
+            aadhaar_match = re.search(r'\b\d{12}\b', cleaned_text)
+
+            if aadhaar_match:
+                return True, None
+
+            # Relaxed fallback: 4-4-4 format
+            aadhaar_match = re.search(r'\b\d{4}\s?\d{4}\s?\d{4}\b', raw_text)
+            if aadhaar_match:
+                return True, None
+
+            return False, get_translated_message("invalid_aadhaar", user_language)
+
+
         # ✅ For other documents, keep keyword validation
         keywords = self.validation_keywords.get(document_type, [])
         if not keywords:
@@ -1578,73 +1599,83 @@ def get_bot_response(session_id: str, user_message: str = "", file_uploaded: dic
     
     # ✅ STEP 0.5: UPLOAD AADHAAR INITIAL (with OCR)
     elif current_step == "upload_aadhaar_initial":
-        if file_uploaded and file_uploaded.get("doc_type") == "aadhaar":
-            application_id = session.get("application_id")
-            if not application_id:
-                application_id = db_manager.generate_application_id() if db_manager else f"{datetime.now().strftime('%Y%m%d%H%M%S')}"
-                session["application_id"] = application_id
-            
-            # Show verification started message
-            session["step"] = "verifying_aadhaar"
-            response = {
-                "response": get_translated_message("aadhaar_verification_started", user_language),
-                "type": "info",
-                "waiting_for": "processing"
-            }
-            
-            # Perform OCR and extract data
-            result = doc_intelligence.analyze_document(
-                file_uploaded["content"],
-                file_uploaded["extension"],
-                "aadhaar",
-                "",  # Blob URL will be added after confirmation
-                None,
-                user_language
-            )
-            
-            if not result.get("is_valid"):
-                session["step"] = "upload_aadhaar_initial"
-                response = {
-                    "response": result.get("validation_error", get_translated_message("invalid_aadhaar", user_language)),
+
+        if file_uploaded:
+
+            expected_doc = "aadhaar"
+
+            # 🔐 Strict dropdown validation
+            if file_uploaded.get("doc_type") != expected_doc:
+                return {
+                    "response": get_translated_message("invalid_aadhaar", user_language),
                     "type": "error",
                     "waiting_for": "aadhaar_upload_initial"
                 }
-            else:
-                fields = result.get("fields", {})
-                
-                # Store extracted data temporarily
-                session["temp_aadhaar_data"] = {
-                    "file_content": file_uploaded["content"],
-                    "file_extension": file_uploaded["extension"],
-                    "fields": fields,
-                    "name": fields.get("name", ""),
-                    "dob": fields.get("dob", ""),
-                    "address": fields.get("address", ""),
-                    "aadhaar_number": fields.get("aadhaar_number", "")
-                }
-                
-                session["step"] = "confirm_aadhaar_details"
-                
-                # Dynamic confirmation text based on language
-                response = {
-                    "response": get_translated_message(
-                        "aadhaar_details_retrieved",
-                        user_language,
-                        name=fields.get("name", "N/A"),
-                        dob=fields.get("dob", "N/A"),
-                        address=fields.get("address", "N/A")
+
+            # 🔎 Single OCR validation
+            result = doc_intelligence.analyze_document(
+                file_uploaded["content"],
+                file_uploaded["extension"],
+                expected_doc,
+                "",
+                None,
+                user_language
+            )
+
+            # ❌ If OCR does NOT confirm Aadhaar → reject
+            if not result.get("is_valid"):
+                return {
+                    "response": result.get(
+                        "validation_error",
+                        get_translated_message("invalid_aadhaar", user_language)
                     ),
-                    "type": "success",
-                    "waiting_for": "aadhaar_confirmation"
+                    "type": "error",
+                    "waiting_for": "aadhaar_upload_initial"
                 }
 
+            # ✅ Generate application ID once
+            if not session.get("application_id"):
+                application_id = (
+                    db_manager.generate_application_id()
+                    if db_manager
+                    else f"{datetime.now().strftime('%Y%m%d%H%M%S')}"
+                )
+                session["application_id"] = application_id
+
+            fields = result.get("fields", {})
+
+            # Store temporarily until confirmation
+            session["temp_aadhaar_data"] = {
+                "file_content": file_uploaded["content"],
+                "file_extension": file_uploaded["extension"],
+                "fields": fields,
+                "name": fields.get("name", ""),
+                "dob": fields.get("dob", ""),
+                "address": fields.get("address", ""),
+                "aadhaar_number": fields.get("aadhaar_number", "")
+            }
+
+            session["step"] = "confirm_aadhaar_details"
+
+            return {
+                "response": get_translated_message(
+                    "aadhaar_details_retrieved",
+                    user_language,
+                    name=fields.get("name", "N/A"),
+                    dob=fields.get("dob", "N/A"),
+                    address=fields.get("address", "N/A")
+                ),
+                "type": "success",
+                "waiting_for": "aadhaar_confirmation"
+            }
+
         else:
-            response = {
+            return {
                 "response": get_translated_message("dpip_accepted", user_language),
                 "type": "text",
                 "waiting_for": "aadhaar_upload_initial"
             }
-    
+
     # ✅ STEP 0.6: CONFIRM AADHAAR DETAILS
     elif current_step == "confirm_aadhaar_details":
 
@@ -1802,7 +1833,28 @@ def get_bot_response(session_id: str, user_message: str = "", file_uploaded: dic
     # ✅ STEP 0.8: UPLOAD PAN CARD
     elif current_step == "upload_pan_card":
 
-        if file_uploaded and file_uploaded.get("doc_type") == "pan_card":
+        if file_uploaded:
+
+            expected_doc = "pan_card"
+
+            # 🔐 Strict dropdown validation
+            if file_uploaded.get("doc_type") != expected_doc:
+                return {
+                    "response": get_translated_message("invalid_pan", user_language),
+                    "type": "error",
+                    "waiting_for": "pan_card_upload"
+                }
+
+            # 🔍 Force OCR validation as PAN only
+            result = doc_intelligence.analyze_document(
+                file_uploaded["content"],
+                file_uploaded["extension"],
+                expected_doc,  # force expected type
+                "",
+                session["personal_info"].get("name", ""),
+                user_language
+            )
+
 
             user_name = session["personal_info"].get("name", "unknown").replace(" ", "_")
 
