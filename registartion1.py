@@ -352,7 +352,7 @@ Ladki Bahin Yojana – For your empowerment.
 Application process ended.
 ════════════════════════════════════════════════════""",
 
-    "dpip_accepted": """Thank you. Please upload a SINGLE IMAGE that contains BOTH the FRONT and BACK sides of your Aadhaar Card, OR type your 12-digit Aadhaar number directly.
+    "dpip_accepted": """Please upload a SINGLE IMAGE that contains BOTH the FRONT and BACK sides of your Aadhaar Card, OR type your 12-digit Aadhaar number directly.
 
 ════════════════════════════════════════════════════
 IMPORTANT:
@@ -1601,6 +1601,87 @@ def get_bot_response(session_id: str, user_message: str = "", file_uploaded: dic
     # ✅ STEP 0.5: UPLOAD AADHAAR INITIAL (with OCR)
     elif current_step == "upload_aadhaar_initial":
 
+        # ✅ Handle typed Aadhaar number (12 digits)
+        if user_message and not file_uploaded:
+            cleaned_input = re.sub(r'\s+', '', user_message.strip())
+            if re.fullmatch(r'\d{12}', cleaned_input):
+                # Fetch from DB
+                aadhaar_db_data = None
+                if db_manager:
+                    aadhaar_db_data = db_manager.get_aadhaar_details(cleaned_input)
+
+                if not aadhaar_db_data:
+                    return {
+                        "response": get_translated_message("invalid_aadhaar", user_language) +
+                                    "\n\nAadhaar number not found in records. Please upload your Aadhaar Card image instead.",
+                        "type": "error",
+                        "waiting_for": "aadhaar_upload_initial"
+                    }
+
+                # Generate application ID
+                if not session.get("application_id"):
+                    application_id = (
+                        db_manager.generate_application_id()
+                        if db_manager
+                        else f"{datetime.now().strftime('%Y%m%d%H%M%S')}"
+                    )
+                    session["application_id"] = application_id
+
+                # Map DB fields to session fields
+                # Adjust field names below to match your actual AadhaarCardDetails table columns
+                name    = aadhaar_db_data.get("FullName", "")
+                dob     = aadhaar_db_data.get("DateOfBirth", "")
+                address = aadhaar_db_data.get("Address", "")
+
+                # Also capture district-equivalent (City used as district fallback)
+                district = aadhaar_db_data.get("City", "")
+
+                # Store district in session too
+                session["domicile_info"]["district"] = district
+                # Normalize dob to DD/MM/YYYY if it's a datetime object
+                if hasattr(dob, 'strftime'):
+                    dob = dob.strftime("%d/%m/%Y")
+                else:
+                    dob = str(dob) if dob else ""
+
+                # Store as temp aadhaar data (no file content since number was typed)
+                session["temp_aadhaar_data"] = {
+                    "file_content": None,
+                    "file_extension": None,
+                    "source": "manual_number",
+                    "fields": {
+                        "name": name,
+                        "dob": dob,
+                        "address": address,
+                        "aadhaar_number": cleaned_input
+                    },
+                    "name": name,
+                    "dob": dob,
+                    "address": address,
+                    "aadhaar_number": cleaned_input
+                }
+
+                session["step"] = "confirm_aadhaar_details"
+
+                return {
+                    "response": get_translated_message(
+                        "aadhaar_details_retrieved",
+                        user_language,
+                        name=name or "N/A",
+                        dob=dob or "N/A",
+                        address=address or "N/A"
+                    ),
+                    "type": "success",
+                    "waiting_for": "aadhaar_confirmation"
+                }
+            else:
+                # Not a valid 12-digit number, re-prompt
+                return {
+                    "response": get_translated_message("dpip_accepted", user_language),
+                    "type": "error",
+                    "waiting_for": "aadhaar_upload_initial"
+                }
+
         if file_uploaded:
 
             expected_doc = "aadhaar"
@@ -1649,6 +1730,7 @@ def get_bot_response(session_id: str, user_message: str = "", file_uploaded: dic
             session["temp_aadhaar_data"] = {
                 "file_content": file_uploaded["content"],
                 "file_extension": file_uploaded["extension"],
+                "source": "ocr",
                 "fields": fields,
                 "name": fields.get("name", ""),
                 "dob": fields.get("dob", ""),
@@ -1676,7 +1758,7 @@ def get_bot_response(session_id: str, user_message: str = "", file_uploaded: dic
                 "type": "text",
                 "waiting_for": "aadhaar_upload_initial"
             }
-
+        
     # ✅ STEP 0.6: CONFIRM AADHAAR DETAILS
     elif current_step == "confirm_aadhaar_details":
 
@@ -1693,13 +1775,16 @@ def get_bot_response(session_id: str, user_message: str = "", file_uploaded: dic
             # Now upload to blob storage using user's name as folder
             user_name = temp_data.get("name", "unknown").replace(" ", "_")
             
-            blob_url = upload_to_blob(
-                temp_data.get("file_content"),
-                user_name,  # Use name as folder instead of application_id
-                "aadhaar",
-                temp_data.get("file_extension")
-            )
-            
+            # Only upload to blob if Aadhaar was uploaded as image (not typed manually)
+            blob_url = ""
+            if temp_data.get("source") != "manual_number" and temp_data.get("file_content"):
+                blob_url = upload_to_blob(
+                    temp_data.get("file_content"),
+                    user_name,
+                    "aadhaar",
+                    temp_data.get("file_extension")
+                )
+                
             # Store in session
             fields = temp_data.get("fields", {})
             session["personal_info"]["name"] = fields.get("name", "")
@@ -1834,6 +1919,55 @@ def get_bot_response(session_id: str, user_message: str = "", file_uploaded: dic
     # ✅ STEP 0.8: UPLOAD PAN CARD
     elif current_step == "upload_pan_card":
 
+        # ✅ Handle typed PAN number
+        if user_message and not file_uploaded:
+            pan_input = user_message.strip().upper().replace(" ", "")
+            if re.match(r'^[A-Z]{5}[0-9]{4}[A-Z]$', pan_input):
+                aadhaar_number = re.sub(r'\D', '', session["extracted_data"].get("aadhaar_number", ""))
+
+                is_linked = False
+                db_result = None
+
+                if db_manager and aadhaar_number and pan_input:
+                    db_result = db_manager.verify_pan_aadhaar_link(aadhaar_number, pan_input)
+                    if db_result:
+                        is_linked = True
+
+                if not is_linked:
+                    session["step"] = "pan_not_linked"
+                    return {
+                        "response": get_translated_message("pan_aadhaar_not_linked", user_language),
+                        "type": "error",
+                        "waiting_for": "none"
+                    }
+
+                # Store PAN (no blob since no file uploaded)
+                session["documents"]["pan_card"] = {
+                    "is_valid": True,
+                    "fields": {"pan_number": pan_input},
+                    "blob_url": ""
+                }
+                session["uploaded_docs"].append("pan_card")
+                session["extracted_data"]["pan_number"] = pan_input
+
+                session["step"] = "income_selection"
+                pan_linked_msg = get_translated_message("pan_aadhaar_linked", user_language)
+                income_msg = get_translated_message("income_selection", user_language)
+
+                return {
+                    "response": f"{pan_linked_msg}\n\n{income_msg}",
+                    "type": "success",
+                    "waiting_for": "income_selection"
+                }
+            else:
+                # Invalid PAN format typed
+                return {
+                    "response": get_translated_message("invalid_pan", user_language) +
+                                "\n\nPlease enter a valid 10-character PAN (e.g., ABCDE1234F) or upload your PAN Card image.",
+                    "type": "error",
+                    "waiting_for": "pan_card_upload"
+                }
+
         if file_uploaded:
 
             expected_doc = "pan_card"
@@ -1846,31 +1980,13 @@ def get_bot_response(session_id: str, user_message: str = "", file_uploaded: dic
                     "waiting_for": "pan_card_upload"
                 }
 
-            # 🔍 Force OCR validation as PAN only
-            result = doc_intelligence.analyze_document(
-                file_uploaded["content"],
-                file_uploaded["extension"],
-                expected_doc,  # force expected type
-                "",
-                session["personal_info"].get("name", ""),
-                user_language
-            )
-
-
             user_name = session["personal_info"].get("name", "unknown").replace(" ", "_")
 
-            # Show verification message immediately
-            response = {
-                "response": get_translated_message("pan_verification_started", user_language),
-                "type": "info",
-                "waiting_for": "processing"
-            }
-
-            # 🔍 Perform OCR + AI extraction
+            # 🔍 Single OCR + AI extraction (removed duplicate call)
             result = doc_intelligence.analyze_document(
                 file_uploaded["content"],
                 file_uploaded["extension"],
-                "pan_card",
+                expected_doc,
                 "",
                 session["personal_info"].get("name", ""),
                 user_language
@@ -1892,7 +2008,7 @@ def get_bot_response(session_id: str, user_message: str = "", file_uploaded: dic
             fields = result.get("fields", {})
             pan_number = fields.get("pan_number", "")
 
-            # ✅ Fallback: If AI failed, extract directly from OCR using regex
+            # ✅ Fallback: regex extraction if AI failed
             if not pan_number:
                 raw_text = result.get("raw_text", "")
                 pan_match = re.search(r'\b[A-Z]{5}[0-9]{4}[A-Z]\b', raw_text.upper())
@@ -1901,8 +2017,7 @@ def get_bot_response(session_id: str, user_message: str = "", file_uploaded: dic
                     fields["pan_number"] = pan_number
                     print("⚡ PAN extracted via regex fallback:", pan_number)
 
-
-            # 🔒 Basic PAN format validation (extra security layer)
+            # 🔒 Final PAN format validation
             if not pan_number or not re.match(r'^[A-Z]{5}[0-9]{4}[A-Z]$', pan_number):
                 session["step"] = "upload_pan_card"
                 return {
@@ -1947,26 +2062,8 @@ def get_bot_response(session_id: str, user_message: str = "", file_uploaded: dic
                     "waiting_for": "none"
                 }
 
-            # 💰 Income Eligibility Check from DB
-            annual_income_db = None
-            if db_result:
-                annual_income_db = db_result.get("AnnualIncome")
-
-            try:
-                if annual_income_db and float(annual_income_db) > 250000:
-                    session["step"] = "completed"
-                    return {
-                        "response": get_translated_message("income_exceeds", user_language),
-                        "type": "error",
-                        "waiting_for": "restart"
-                    }
-            except Exception:
-                pass  # If DB value malformed, ignore and continue
-
-            # ✅ All checks passed → Proceed
-            # ✅ All checks passed → Go directly to Phase 4
+            # ✅ Linked → Go to income selection
             session["step"] = "income_selection"
-
             pan_linked_msg = get_translated_message("pan_aadhaar_linked", user_language)
             income_msg = get_translated_message("income_selection", user_language)
 
@@ -1982,7 +2079,6 @@ def get_bot_response(session_id: str, user_message: str = "", file_uploaded: dic
                 "type": "text",
                 "waiting_for": "pan_card_upload"
             }
-    
     # ═══════════════════════════════════════════════════════════════
     # 🟣 PHASE 4 – INCOME SELECTION & ELIGIBILITY CHECK
     # ═══════════════════════════════════════════════════════════════
