@@ -568,7 +568,7 @@ You can check your application status using:
 Thank you.
 Ladki Bahin Yojana – For empowered women.""",
 
-    "final_cancelled": """Application cancelled.
+"final_cancelled": """Application cancelled.
 
 What would you like to do?
 
@@ -576,8 +576,69 @@ What would you like to do?
 2. Re-select income bracket
 3. Exit
 
-Please enter the number (1-3):"""
+Please enter the number (1-3):""",
+
+    "correction_menu": """What would you like to correct?
+
+1. Name
+2. Date of Birth
+3. Address
+4. Mobile
+5. Email
+6. Bank Details (Bank Name, Account, IFSC)
+7. Income
+
+Enter the number (1-7):""",
+
+    "correction_invalid_choice": """Please enter a number between 1 and 7:""",
+
+    "correction_prompt_name":    """Enter corrected Name:""",
+    "correction_prompt_dob":     """Enter corrected Date of Birth (DD/MM/YYYY):""",
+    "correction_prompt_address": """Enter corrected Address:""",
+    "correction_prompt_mobile":  """Enter corrected Mobile Number (10 digits):""",
+    "correction_prompt_email":   """Enter corrected Email (or type 'skip'):""",
+    "correction_prompt_bank":    """Enter corrected Bank Details:
+Bank Name, Account Number, IFSC Code
+
+Example: State Bank of India, 12345678901234, SBIN0001234""",
+
+    "correction_prompt_income":  """Select corrected Income:
+1. Less than ₹1 Lakh
+2. ₹1-2 Lakh
+3. ₹2-2.5 Lakh
+4. More than ₹2.5 Lakh""",
+
+    "correction_invalid_income_choice": """Please enter 1, 2, 3, or 4:""",
+
+    "aadhaar_incomplete": """Incomplete Aadhaar Card!
+
+Please upload a SINGLE IMAGE containing BOTH the FRONT and BACK sides of your Aadhaar Card.
+
+════════════════════════════════════════════════════
+IMPORTANT:
+- Both sides must be in the SAME photo
+- Front side: Contains Name, DOB, Aadhaar Number
+- Back side: Contains Address
+- Both sides must be clearly visible
+════════════════════════════════════════════════════
+
+Please re-upload with both sides visible.""",
+
+    "pan_name_mismatch_upload": """Name Mismatch between Aadhaar and PAN Card!
+
+- Name on Aadhaar: {aadhaar_name}
+- Name on PAN Card: {pan_name}
+
+Please ensure both documents belong to the same person and re-upload your PAN Card.""",
+
+    "pan_name_mismatch_typed": """Name Mismatch between Aadhaar and PAN records!
+
+- Name on Aadhaar: {aadhaar_name}
+- Name on PAN record: {pan_name}
+
+Please verify your documents and try again."""
 }
+
 
 
 # ============================================
@@ -1266,13 +1327,32 @@ Return JSON only."""
                 result['pan_number'] = pan_match.group(0)
         
         elif document_type == "bank_passbook":
-            ifsc_match = re.search(r'\b[A-Z]{4}0[A-Z0-9]{6}\b', text)
+
+            # Extract IFSC
+            ifsc_match = re.search(r'\b[A-Z]{4}0[A-Z0-9]{6}\b', text.upper())
             if ifsc_match:
                 result['ifsc_code'] = ifsc_match.group(0)
-            
-            account_matches = re.findall(r'\b\d{9,18}\b', text)
+
+            # Extract Account Number (ignore small numbers like dates)
+            account_matches = re.findall(r'\b\d{10,18}\b', text)
             if account_matches:
-                result['account_number'] = account_matches[0]
+                # choose longest number (more likely account)
+                result['account_number'] = max(account_matches, key=len)
+
+            # Extract Bank Name
+            bank_match = re.search(r'(State Bank of India|SBI|HDFC Bank|ICICI Bank|Bank of Baroda|Punjab National Bank)', text, re.IGNORECASE)
+            if bank_match:
+                result['bank_name'] = bank_match.group(0)
+
+            # Try to extract account holder name (line above Account No usually)
+            lines = text.split('\n')
+            for i, line in enumerate(lines):
+                if re.search(r'account', line, re.IGNORECASE) and i > 0:
+                    possible_name = lines[i-1].strip()
+                    if len(possible_name) > 3 and not re.search(r'\d', possible_name):
+                        result['account_holder_name'] = possible_name
+                        break
+
         
         elif document_type == "ration_card":
             card_match = re.search(r'\b(MH\d{10,}|\d{10,})\b', text)
@@ -1759,6 +1839,31 @@ def get_bot_response(session_id: str, user_message: str = "", file_uploaded: dic
                     "waiting_for": "aadhaar_upload_initial"
                 }
 
+            # ✅ Check both sides present: need address (back side) AND aadhaar number (front side)
+            fields = result.get("fields", {})
+            raw_text = result.get("raw_text", "")
+            has_front = bool(fields.get("aadhaar_number") or re.search(r'\d{12}', re.sub(r'\s', '', raw_text)))
+            has_back  = bool(fields.get("address") or any(
+                kw in raw_text.lower() for kw in ["s/o", "d/o", "w/o", "c/o", "house", "village", "dist", "pin", "state", "at post", "ward"]
+            ))
+
+            if not (has_front and has_back):
+                return {
+                    "response": get_translated_message("aadhaar_incomplete", user_language),
+                    "type": "error",
+                    "waiting_for": "aadhaar_upload_initial"
+                }
+
+            if not result.get("is_valid"):
+                return {
+                    "response": result.get(
+                        "validation_error",
+                        get_translated_message("invalid_aadhaar", user_language)
+                    ),
+                    "type": "error",
+                    "waiting_for": "aadhaar_upload_initial"
+                }
+
             # ✅ Generate application ID once
             if not session.get("application_id"):
                 application_id = (
@@ -1984,6 +2089,19 @@ def get_bot_response(session_id: str, user_message: str = "", file_uploaded: dic
                         "type": "error",
                         "waiting_for": "none"
                     }
+                # ✅ For typed PAN, db_result may contain name — check if available
+                if db_result and isinstance(db_result, dict):
+                    pan_name_db  = db_result.get("FullName", "") or db_result.get("name", "")
+                    aadhaar_name = session["personal_info"].get("name", "")
+                    if pan_name_db and aadhaar_name:
+                        is_name_ok, _ = doc_intelligence.validate_name(pan_name_db, aadhaar_name, user_language)
+                        if not is_name_ok:
+                            return {
+                                "response": get_translated_message("pan_name_mismatch_typed", user_language,
+                                                                aadhaar_name=aadhaar_name, pan_name=pan_name_db),
+                                "type": "error",
+                                "waiting_for": "pan_card_upload"
+                            }
 
                 # Store PAN (no blob since no file uploaded)
                 session["documents"]["pan_card"] = {
@@ -2106,6 +2224,19 @@ def get_bot_response(session_id: str, user_message: str = "", file_uploaded: dic
                     "type": "error",
                     "waiting_for": "none"
                 }
+
+            # ✅ Details match check: PAN name vs Aadhaar name
+            pan_name     = fields.get("name", "")
+            aadhaar_name = session["personal_info"].get("name", "")
+            if pan_name and aadhaar_name:
+                is_name_ok, name_error = doc_intelligence.validate_name(pan_name, aadhaar_name, user_language)
+                if not is_name_ok:
+                    return {
+                        "response": get_translated_message("pan_name_mismatch_upload", user_language,
+                                                           aadhaar_name=aadhaar_name, pan_name=pan_name),
+                        "type": "error",
+                        "waiting_for": "pan_card_upload"
+                    }
 
             # ✅ FLOW CHANGE: Linked → Go to collect_mobile instead of income_selection
             session["step"] = "collect_mobile"
@@ -2796,23 +2927,205 @@ def get_bot_response(session_id: str, user_message: str = "", file_uploaded: dic
     
     # ✅ STEP 10: FINAL REVIEW
     elif current_step == "final_review":
-        if user_message.upper() == "YES":
-            session["step"] = "declaration"
-            response = {
-                "response": get_translated_message("declaration", user_language),
-                "type": "info",
-                "waiting_for": "declaration_confirm"
+        if user_message.upper() in ["YES", "ho", "होय", "हो"]:
+
+            # Direct submit logic here
+            session["step"] = "submit_application"
+
+            application_id = session.get("application_id")
+
+            return {
+                "response": f"""आपला अर्ज यशस्वीरीत्या सबमिट झाला आहे.
+
+        आपला अर्ज क्रमांक:
+        {application_id}
+
+        आपण अर्ज स्थिती खालील पर्यायाने तपासू शकता:
+        • अर्ज क्रमांक
+        • आधार क्रमांक
+
+        धन्यवाद.
+        लाडकी बहिण योजना – सशक्त महिलांसाठी.""",
+                "type": "success",
+                "waiting_for": "none",
+                "application_id": application_id
             }
+
         elif user_message.upper() == "NO":
+            # ✅ NO → go to inline correction step
+            session["step"] = "inline_correction"
             response = {
-                "response": get_translated_message("edit_request", user_language),
+                "response": get_translated_message("correction_menu", user_language),
                 "type": "info",
-                "waiting_for": "edit_request"
+                "waiting_for": "correction_choice"
             }
         else:
             response = {
                 "response": get_translated_message("confirmation_yes_no", user_language),
                 "type": "text",
+                "waiting_for": "review_confirmation"
+            }
+
+    # ✅ STEP 10.5: INLINE CORRECTION
+    elif current_step == "inline_correction":
+
+        # Sub-step: waiting for which field to correct
+        if not session.get("correction_choice"):
+            choice_map = {
+                "1": "name", "2": "dob", "3": "address",
+                "4": "mobile", "5": "email", "6": "bank", "7": "income"
+            }
+            choice = choice_map.get(user_message.strip())
+
+            if not choice:
+                return {
+                    "response": get_translated_message("correction_invalid_choice", user_language),
+                    "type": "error",
+                    "waiting_for": "correction_choice"
+                }
+
+            session["correction_choice"] = choice
+
+            prompt_key_map = {
+                "name":    "correction_prompt_name",
+                "dob":     "correction_prompt_dob",
+                "address": "correction_prompt_address",
+                "mobile":  "correction_prompt_mobile",
+                "email":   "correction_prompt_email",
+                "bank":    "correction_prompt_bank",
+                "income":  "correction_prompt_income"
+            }
+
+            return {
+                "response": get_translated_message(prompt_key_map[choice], user_language),
+                "type": "info",
+                "waiting_for": "correction_value"
+            }
+
+        # Sub-step: user entered the corrected value
+        else:
+            choice = session["correction_choice"]
+
+            if choice == "name":
+                session["personal_info"]["name"] = user_message.strip()
+
+            elif choice == "dob":
+                if re.match(r'^\d{2}/\d{2}/\d{4}$', user_message.strip()):
+                    session["personal_info"]["dob"] = user_message.strip()
+                    session["personal_info"]["age"] = calculate_age(user_message.strip())
+                else:
+                    return {
+                        "response": get_translated_message("invalid_date", user_language),
+                        "type": "error",
+                        "waiting_for": "correction_value"
+                    }
+
+            elif choice == "address":
+                session["contact_info"]["address"] = user_message.strip()
+
+            elif choice == "mobile":
+                if re.match(r'^[6-9]\d{9}$', user_message.strip()):
+                    session["contact_info"]["mobile"] = user_message.strip()
+                else:
+                    return {
+                        "response": get_translated_message("invalid_mobile", user_language),
+                        "type": "error",
+                        "waiting_for": "correction_value"
+                    }
+
+            elif choice == "email":
+                if user_message.strip().lower() == "skip":
+                    session["contact_info"]["email"] = ""
+                elif re.match(r'^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$', user_message.strip()):
+                    session["contact_info"]["email"] = user_message.strip()
+                else:
+                    return {
+                        "response": get_translated_message("invalid_email", user_language),
+                        "type": "error",
+                        "waiting_for": "correction_value"
+                    }
+
+            elif choice == "bank":
+                parts = [p.strip() for p in user_message.split(',')]
+                if len(parts) >= 3:
+                    bank_name      = parts[0].strip()
+                    account_number = re.sub(r'\s+', '', parts[1])
+                    ifsc_code      = parts[2].strip().upper()
+                    account_valid  = account_number.isdigit() and 9 <= len(account_number) <= 18
+                    ifsc_valid     = bool(re.match(r'^[A-Z]{4}0[A-Z0-9]{6}$', ifsc_code))
+                    if account_valid and ifsc_valid and len(bank_name) >= 3:
+                        session["bank_info"]["bank_name"]      = bank_name
+                        session["bank_info"]["account_number"] = account_number
+                        session["bank_info"]["ifsc"]           = ifsc_code
+                    else:
+                        return {
+                            "response": get_translated_message("bank_details_invalid_format", user_language),
+                            "type": "error",
+                            "waiting_for": "correction_value"
+                        }
+                else:
+                    return {
+                        "response": get_translated_message("bank_details_invalid_format", user_language),
+                        "type": "error",
+                        "waiting_for": "correction_value"
+                    }
+
+            elif choice == "income":
+                income_map = {
+                    "1": ("Less than ₹1 Lakh", 100000),
+                    "2": ("₹1-2 Lakh", 200000),
+                    "3": ("₹2-2.5 Lakh", 250000),
+                    "4": ("More than ₹2.5 Lakh", 300000)
+                }
+                sel = income_map.get(user_message.strip())
+                if sel:
+                    session["income_info"]["annual_income_display"] = sel[0]
+                    session["income_info"]["annual_income"] = sel[1]
+                else:
+                    return {
+                        "response": get_translated_message("correction_invalid_income_choice", user_language),
+                        "type": "error",
+                        "waiting_for": "correction_value"
+                    }
+
+            # ✅ Clear correction state and return to final review
+            session.pop("correction_choice", None)
+            session["step"] = "upload_photograph"  # Re-trigger photo_success summary
+
+            # Rebuild summary inline (same as upload_photograph success)
+            name   = session["personal_info"].get("name", "N/A")
+            dob    = session["personal_info"].get("dob", "N/A")
+            age    = session["personal_info"].get("age", "N/A")
+            marital = session["personal_info"].get("marital_status", "N/A")
+            mobile = session["contact_info"].get("mobile", "N/A")
+            email  = session["contact_info"].get("email", "Not provided")
+            address = session["contact_info"].get("address", "N/A")
+            aadhaar_masked = mask_aadhaar(session["extracted_data"].get("aadhaar_number", ""))
+            pan_masked     = session["extracted_data"].get("pan_number", "XXXXXXXXXX")
+            account_masked = mask_account(session["bank_info"].get("account_number", ""))
+            ifsc       = session["bank_info"].get("ifsc", "N/A")
+            bank_name  = session["bank_info"].get("bank_name", "N/A")
+            annual_income = session["income_info"].get("annual_income_display", session["income_info"].get("annual_income", "N/A"))
+            ration_type   = session["income_info"].get("ration_card_type", "N/A")
+            doc_count = len(session["uploaded_docs"])
+            doc_list_items = ["- Aadhaar Card",
+                              f"- {DOCUMENT_TYPES.get(session.get('domicile_proof_type', ''), 'Domicile Proof')}"]
+            if "income_certificate" in session["uploaded_docs"]:
+                doc_list_items.append("- Income Certificate")
+            doc_list_items += ["- Bank Passbook", "- Photograph"]
+            doc_list = "\n".join(doc_list_items)
+
+            session["step"] = "final_review"
+
+            return {
+                "response": get_translated_message(
+                    "photo_success", user_language,
+                    name=name, dob=dob, age=age, aadhaar=aadhaar_masked,
+                    pan=pan_masked, marital=marital, mobile=mobile, email=email,
+                    address=address, account=account_masked, ifsc=ifsc, bank=bank_name,
+                    income=annual_income, ration=ration_type, count=doc_count, doc_list=doc_list
+                ),
+                "type": "success",
                 "waiting_for": "review_confirmation"
             }
     
@@ -2940,6 +3253,8 @@ def get_bot_response(session_id: str, user_message: str = "", file_uploaded: dic
                     
                     except Exception as e:
                         logger.error(f"Database save error: {e}")
+                        import traceback
+                        logger.error(traceback.format_exc())
                 
                 session["step"] = "completed"
                 session["status"] = "SUBMITTED"
