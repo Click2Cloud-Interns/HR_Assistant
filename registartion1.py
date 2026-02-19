@@ -91,12 +91,18 @@ Please enter the number (1-4):""",
     "marital_confirmed": """Marital Status: {status}
 
 ════════════════════════════════════════════════════
-Upload Aadhaar Card
+DOMICILE PROOF
 ════════════════════════════════════════════════════
 
-Please upload your Aadhaar Card (PDF/JPG/PNG)
+Please select ONE document to prove Maharashtra domicile:
 
-Use the plus button and select 'Aadhaar Card' from the dropdown.""",
+1. Domicile Certificate
+2. Ration Card
+3. Voter ID
+4. Birth Certificate
+5. School Leaving Certificate
+
+Enter the number (1-5):""",
 
 "aadhaar_success": """Aadhaar Card uploaded successfully.
 
@@ -131,9 +137,22 @@ Extracted Data:
 - Name: {name}
 {extra_info}
 
-Please upload your Income Certificate (PDF/JPG/PNG)
+════════════════════════════════════════════════════
+INCOME DETAILS
+════════════════════════════════════════════════════
 
-Use the plus button and select 'Income Certificate' from the dropdown.""",
+You may:
+
+1. Upload Income Certificate (PDF/JPG/PNG)
+OR
+2. Select Income Manually:
+
+   1. Less than ₹1 Lakh
+   2. ₹1-2 Lakh
+   3. ₹2-2.5 Lakh
+   4. More than ₹2.5 Lakh
+
+Enter 1-4 OR upload the certificate using the plus button.""",
 
     "ration_color": """Ration Card uploaded successfully.
 
@@ -171,11 +190,24 @@ Use the plus button and select 'Bank Passbook' from the dropdown.""",
 Extracted Data:
 - Certificate No: {cert_no}
 - Name: {name}
-- Annual Income: Rs. {income}
+- Annual Income: {income}
 
-Please upload your Bank Passbook (first page) (PDF/JPG/PNG)
+════════════════════════════════════════════════════
+BANK DETAILS
+════════════════════════════════════════════════════
 
-Use the plus button and select 'Bank Passbook' from the dropdown.""",
+You may:
+
+1. Upload Bank Passbook (PDF/JPG/PNG)
+OR
+2. Enter Bank Details Manually:
+
+   Bank Name, Account Number, IFSC Code
+
+Example:
+State Bank of India, 12345678901234, SBIN0001234
+
+Use the plus button OR type details directly.""",
 
     "bank_success": """Bank Passbook uploaded successfully.
 
@@ -243,12 +275,6 @@ Type 'I AGREE' to confirm:""",
     "declaration_accepted": """Declaration accepted.
 
 Type 'SUBMIT' to submit your application:""",
-
-    "aadhaar_exists": """APPLICATION FAILED
-
-An application with this Aadhaar number already exists in our system.
-
-If you believe this is an error, please contact the helpline.""",
 
     "success": """Processing your application...
 
@@ -440,6 +466,28 @@ Document is being verified...""",
 4. More than ₹2.5 Lakh
 
 Please enter the number (1-4):""",
+
+"income_manual_success": """Income recorded successfully.
+
+Now provide Bank Details.
+
+You may:
+• Upload Bank Passbook
+OR
+• Enter bank details manually:
+Bank Name, Account Number, IFSC Code
+
+Example:
+State Bank of India, 12345678901234, SBIN0001234""",
+
+"bank_manual_success": """Bank details recorded successfully.
+
+Bank: {bank}
+Account: {account}
+IFSC: {ifsc}
+
+Please upload your Photograph.""",
+
 
     "eligibility_success": """Congratulations! 🎉
 You are eligible for Ladki Bahin Yojana.
@@ -1628,16 +1676,12 @@ def get_bot_response(session_id: str, user_message: str = "", file_uploaded: dic
                     session["application_id"] = application_id
 
                 # Map DB fields to session fields
-                # Adjust field names below to match your actual AadhaarCardDetails table columns
                 name    = aadhaar_db_data.get("FullName", "")
                 dob     = aadhaar_db_data.get("DateOfBirth", "")
                 address = aadhaar_db_data.get("Address", "")
-
-                # Also capture district-equivalent (City used as district fallback)
                 district = aadhaar_db_data.get("City", "")
-
-                # Store district in session too
                 session["domicile_info"]["district"] = district
+
                 # Normalize dob to DD/MM/YYYY if it's a datetime object
                 if hasattr(dob, 'strftime'):
                     dob = dob.strftime("%d/%m/%Y")
@@ -1804,7 +1848,7 @@ def get_bot_response(session_id: str, user_message: str = "", file_uploaded: dic
             # Clear temp data
             session.pop("temp_aadhaar_data", None)
             
-            # Move to PAN upload
+            # ✅ FLOW CHANGE: Move to PAN upload
             session["step"] = "upload_pan_card"
             response = {
                 "response": get_translated_message("pan_upload_prompt", user_language),
@@ -1950,14 +1994,15 @@ def get_bot_response(session_id: str, user_message: str = "", file_uploaded: dic
                 session["uploaded_docs"].append("pan_card")
                 session["extracted_data"]["pan_number"] = pan_input
 
-                session["step"] = "income_selection"
+                # ✅ FLOW CHANGE: Go to collect_mobile instead of income_selection
+                session["step"] = "collect_mobile"
                 pan_linked_msg = get_translated_message("pan_aadhaar_linked", user_language)
-                income_msg = get_translated_message("income_selection", user_language)
+                mobile_msg = get_translated_message("mobile_number_prompt", user_language)
 
                 return {
-                    "response": f"{pan_linked_msg}\n\n{income_msg}",
+                    "response": f"{pan_linked_msg}\n\n{mobile_msg}",
                     "type": "success",
-                    "waiting_for": "income_selection"
+                    "waiting_for": "mobile_input"
                 }
             else:
                 # Invalid PAN format typed
@@ -1982,7 +2027,7 @@ def get_bot_response(session_id: str, user_message: str = "", file_uploaded: dic
 
             user_name = session["personal_info"].get("name", "unknown").replace(" ", "_")
 
-            # 🔍 Single OCR + AI extraction (removed duplicate call)
+            # 🔍 Single OCR + AI extraction
             result = doc_intelligence.analyze_document(
                 file_uploaded["content"],
                 file_uploaded["extension"],
@@ -2062,15 +2107,15 @@ def get_bot_response(session_id: str, user_message: str = "", file_uploaded: dic
                     "waiting_for": "none"
                 }
 
-            # ✅ Linked → Go to income selection
-            session["step"] = "income_selection"
+            # ✅ FLOW CHANGE: Linked → Go to collect_mobile instead of income_selection
+            session["step"] = "collect_mobile"
             pan_linked_msg = get_translated_message("pan_aadhaar_linked", user_language)
-            income_msg = get_translated_message("income_selection", user_language)
+            mobile_msg = get_translated_message("mobile_number_prompt", user_language)
 
             return {
-                "response": f"{pan_linked_msg}\n\n{income_msg}",
+                "response": f"{pan_linked_msg}\n\n{mobile_msg}",
                 "type": "success",
-                "waiting_for": "income_selection"
+                "waiting_for": "mobile_input"
             }
 
         else:
@@ -2079,236 +2124,17 @@ def get_bot_response(session_id: str, user_message: str = "", file_uploaded: dic
                 "type": "text",
                 "waiting_for": "pan_card_upload"
             }
-    # ═══════════════════════════════════════════════════════════════
-    # 🟣 PHASE 4 – INCOME SELECTION & ELIGIBILITY CHECK
-    # ═══════════════════════════════════════════════════════════════
 
-    elif current_step == "income_selection":
-        income_map = {
-            "1": {"label": "₹1 लाखांपेक्षा कमी",  "max": 100000,        "eligible": True},
-            "2": {"label": "₹1-2 लाख",              "max": 200000,        "eligible": True},
-            "3": {"label": "₹2-2.5 लाख",            "max": 250000,        "eligible": True},
-            "4": {"label": "₹2.5 लाखांपेक्षा जास्त","max": float('inf'), "eligible": False},
-        }
-
-        selected = income_map.get(user_message.strip())
-
-        if selected:
-            session["income_info"]["annual_income_display"] = selected["label"]
-            session["income_info"]["annual_income"] = selected["max"] if selected["eligible"] else 300000
-            session["income_info"]["source"] = "user_selected"
-
-            if selected["eligible"]:
-                session["step"] = "collect_bank_details"
-                response = {
-                    "response": get_translated_message("eligibility_success", user_language),
-                    "type": "success",
-                    "waiting_for": "bank_details"
-                }
-            else:
-                session["step"] = "completed"
-                response = {
-                    "response": get_translated_message(
-                        "eligibility_failure",
-                        user_language,
-                        reason="वार्षिक उत्पन्न ₹2.50 लाखांपेक्षा जास्त आहे / Annual income exceeds ₹2.50 Lakh"
-                    ),
-                    "type": "error",
-                    "waiting_for": "none"
-                }
-        else:
-            response = {
-                "response": get_translated_message("invalid_option", user_language) + "\n\n" +
-                            get_translated_message("income_selection", user_language),
-                "type": "error",
-                "waiting_for": "income_selection"
-            }
-
-    # ═══════════════════════════════════════════════════════════════
-    # 🟣 PHASE 5 – BANK DETAILS COLLECTION & VALIDATION
-    # ═══════════════════════════════════════════════════════════════
-
-    elif current_step == "collect_bank_details":
-        if not user_message.strip():
-            response = {
-                "response": get_translated_message("eligibility_success", user_language),
-                "type": "text",
-                "waiting_for": "bank_details"
-            }
-        else:
-            parts = [p.strip() for p in user_message.split(',')]
-
-            if len(parts) >= 3:
-                bank_name    = parts[0].strip()
-                account_number = re.sub(r'\s+', '', parts[1])
-                ifsc_code    = parts[2].strip().upper().replace(" ", "")
-
-                # Validations
-                account_valid = account_number.isdigit() and 9 <= len(account_number) <= 18
-                ifsc_valid    = bool(re.match(r'^[A-Z]{4}0[A-Z0-9]{6}$', ifsc_code))
-                bank_valid    = len(bank_name) >= 3
-
-                if account_valid and ifsc_valid and bank_valid:
-                    # Store bank info
-                    session["bank_info"] = {
-                        "bank_name":      bank_name,
-                        "account_number": account_number,
-                        "ifsc":           ifsc_code,
-                        "source":         "manual_input"
-                    }
-
-                    # Move to final confirmation
-                    session["step"] = "final_confirmation"
-
-                    name    = session["personal_info"].get("name", "N/A")
-                    dob     = session["personal_info"].get("dob", "N/A")
-                    age     = session["personal_info"].get("age", "N/A")
-                    mobile  = session["contact_info"].get("mobile", "N/A")
-                    address = session["contact_info"].get("address", "N/A")
-                    aadhaar_masked  = mask_aadhaar(session["extracted_data"].get("aadhaar_number", ""))
-                    account_masked  = mask_account(account_number)
-                    income_display  = session["income_info"].get("annual_income_display", "N/A")
-
-                    response = {
-                        "response": get_translated_message(
-                            "final_confirmation",
-                            user_language,
-                            name=name,
-                            dob=dob,
-                            age=age,
-                            aadhaar=aadhaar_masked,
-                            pan_card=session["extracted_data"].get("pan_number", "N/A"),
-                            address=address,
-                            bank=bank_name,
-                            account=account_masked,
-                            ifsc=ifsc_code,
-                            income=income_display
-                        ),
-                        "type": "info",
-                        "waiting_for": "final_confirmation"
-                    }
-                else:
-                    # Build specific error message
-                    errors = []
-                    if not bank_valid:
-                        errors.append("- Bank name is too short")
-                    if not account_valid:
-                        errors.append(f"- Account number must be 9-18 digits (entered: {len(account_number)} chars)")
-                    if not ifsc_valid:
-                        errors.append(f"- IFSC code must match format XXXX0XXXXXX (entered: {ifsc_code})")
-
-                    error_detail = "\n".join(errors)
-                    response = {
-                        "response": get_translated_message("bank_details_invalid_format", user_language) +
-                                    f"\n\nErrors:\n{error_detail}",
-                        "type": "error",
-                        "waiting_for": "bank_details"
-                    }
-            else:
-                response = {
-                    "response": get_translated_message("bank_details_invalid_format", user_language),
-                    "type": "error",
-                    "waiting_for": "bank_details"
-                }
-
-    # ═══════════════════════════════════════════════════════════════
-    # 🟣 PHASE 6 – FINAL CONFIRMATION & SUBMISSION
-    # ═══════════════════════════════════════════════════════════════
-
-    elif current_step == "final_confirmation":
-        yes_words = ["yes", "होय", "हां", "y", "YES", "HOY", "हाँ", "hoy","Ho","ho"]
-        no_words  = ["no",  "नाही", "नहीं", "n", "NO", "NAHI", "nahi"]
-
-        user_input = user_message.strip().lower()
-
-        if user_input in [w.lower() for w in yes_words]:
-            # Submit application
-            aadhaar_number = session["extracted_data"].get("aadhaar_number", "")
-
-            # Check duplicate
-            application_id = session.get("application_id")
-            session["step"]         = "completed"
-            session["status"]       = "SUBMITTED"
-            session["submitted_at"] = datetime.now().isoformat()
- 
-            response = {
-                "response": get_translated_message(
-                    "final_submitted",
-                    user_language,
-                    app_id=application_id
-                ),
-                "type": "success",
-                "waiting_for": "none",
-                "application_id": application_id
-            }
- 
-
-    elif current_step == "final_cancelled":
-        choice = user_message.strip()
-        if choice == "1":
-            # Re-enter bank details
-            session["step"] = "collect_bank_details"
-            session["bank_info"] = {}
-            response = {
-                "response": get_translated_message("eligibility_success", user_language),
-                "type": "info",
-                "waiting_for": "bank_details"
-            }
-        elif choice == "2":
-            # Re-select income
-            session["step"] = "income_selection"
-            session["income_info"] = {}
-            session["bank_info"]   = {}
-            response = {
-                "response": get_translated_message("income_selection", user_language),
-                "type": "info",
-                "waiting_for": "income_selection"
-            }
-        elif choice == "3":
-            session["step"] = "completed"
-            response = {
-                "response": "धन्यवाद. लाडकी बहिण योजना – सशक्त महिलांसाठी.",
-                "type": "info",
-                "waiting_for": "none"
-            }
-        else:
-            response = {
-                "response": get_translated_message("final_cancelled", user_language),
-                "type": "error",
-                "waiting_for": "cancel_option"
-            }
-
-    
-    # ✅ STEP 1: COLLECT MOBILE (First step)
-    elif  current_step == "collect_mobile":
+    # ✅ STEP 1: COLLECT MOBILE
+    elif current_step == "collect_mobile":
         # Generate application ID if not exists
         if not session.get("application_id"):
             application_id = db_manager.generate_application_id() if db_manager else f"{datetime.now().strftime('%Y%m%d%H%M%S')}"
             session["application_id"] = application_id
-        
-        # If no user message yet, show initial greeting with Aadhaar confirmation
+
         if not user_message:
-            aadhaar_msg = get_translated_message(
-                "aadhaar_prefilled", 
-                user_language,
-                name=session["personal_info"].get("name", ""),
-                age=session["personal_info"].get("age", ""),
-                dob=session["personal_info"].get("dob", ""),
-                address=session["contact_info"].get("address", ""),
-                district=session["domicile_info"].get("district", "")
-            )
-            
-            doc_msg = get_translated_message(
-                "document_info",
-                user_language,
-                app_id=session.get("application_id")
-            )
-            
-            # ✅ CREATE PROPER MOBILE PROMPT (not using mobile_confirmed template)
-            mobile_msg = get_translated_message("mobile_number_prompt", user_language)
-            
             response = {
-                "response": f"{aadhaar_msg}\n\n{doc_msg}\n\n{mobile_msg}",
+                "response": get_translated_message("mobile_number_prompt", user_language),
                 "type": "info",
                 "waiting_for": "mobile_input"
             }
@@ -2368,11 +2194,12 @@ def get_bot_response(session_id: str, user_message: str = "", file_uploaded: dic
         
         if status in ["Married", "Unmarried", "Widow", "Divorced"]:
             session["personal_info"]["marital_status"] = status
-            session["step"] = "upload_aadhaar"
+            # ✅ FLOW CHANGE: Go directly to domicile proof selection (skip separate aadhaar upload step)
+            session["step"] = "select_domicile_proof"
             response = {
                 "response": get_translated_message("marital_confirmed", user_language, status=status),
                 "type": "success",
-                "waiting_for": "aadhaar_upload"
+                "waiting_for": "domicile_selection"
             }
         else:
             response = {
@@ -2381,57 +2208,7 @@ def get_bot_response(session_id: str, user_message: str = "", file_uploaded: dic
                 "waiting_for": "marital_status"
             }
     
-    # ✅ STEP 4: UPLOAD AADHAAR (For blob storage only - data already extracted)
-    elif current_step == "upload_aadhaar":
-        if file_uploaded and file_uploaded.get("doc_type") == "aadhaar":
-            application_id = session.get("application_id")
-            
-            # Upload to blob storage
-            blob_url = upload_to_blob(
-                file_uploaded["content"],
-                application_id,
-                "aadhaar",
-                file_uploaded["extension"]
-            )
-            
-            if not blob_url:
-                response = {
-                    "response": "❌ Upload failed. Please try again.",
-                    "type": "error",
-                    "waiting_for": "aadhaar_upload"
-                }
-            else:
-                # Store blob URL (data already extracted from main.py)
-                if "aadhaar" not in session["uploaded_docs"]:
-                    session["uploaded_docs"].append("aadhaar")
-                
-                session["documents"]["aadhaar"] = {
-                    "is_valid": True,
-                    "fields": {
-                        "aadhaar_number": session["extracted_data"].get("aadhaar_number", ""),
-                        "name": session["personal_info"].get("name", "")
-                    },
-                    "blob_url": blob_url
-                }
-                
-                session["step"] = "select_domicile_proof"
-                
-                aadhaar_display = mask_aadhaar(session["extracted_data"].get("aadhaar_number", ""))
-                
-                response = {
-                    "response": get_translated_message("aadhaar_success", user_language, aadhaar=aadhaar_display) + "\n\n" + 
-                            get_translated_message("domicile_prompt", user_language),
-                    "type": "success",
-                    "waiting_for": "domicile_selection"
-                }
-        else:
-            response = {
-                "response": get_translated_message("marital_confirmed", user_language),
-                "type": "text",
-                "waiting_for": "aadhaar_upload"
-            }
-    
-    # ✅ STEP 5: SELECT DOMICILE PROOF
+    # ✅ STEP 4: SELECT DOMICILE PROOF
     elif current_step == "select_domicile_proof":
         proof_map = {
             "1": ("domicile_certificate", "Domicile Certificate"),
@@ -2458,7 +2235,7 @@ def get_bot_response(session_id: str, user_message: str = "", file_uploaded: dic
                 "waiting_for": "domicile_selection"
             }
     
-    # ✅ STEP 6: UPLOAD DOMICILE PROOF
+    # ✅ STEP 5: UPLOAD DOMICILE PROOF
     elif current_step == "upload_domicile_proof":
         domicile_type = session.get("domicile_proof_type")
         
@@ -2550,7 +2327,7 @@ def get_bot_response(session_id: str, user_message: str = "", file_uploaded: dic
                 "waiting_for": f"{domicile_type}_upload"
             }
     
-    # ✅ STEP 7: ASK RATION COLOR
+    # ✅ STEP 6: ASK RATION COLOR
     elif current_step == "ask_ration_color":
         color_map = {"1": "Yellow", "2": "Orange", "3": "White"}
         color = color_map.get(user_message, user_message.capitalize())
@@ -2592,9 +2369,10 @@ def get_bot_response(session_id: str, user_message: str = "", file_uploaded: dic
                 "waiting_for": "ration_color"
             }
     
-    # ✅ STEP 8: UPLOAD INCOME CERTIFICATE
+    # ✅ STEP 7: UPLOAD INCOME CERTIFICATE
     elif current_step == "upload_income_certificate":
-        # Allow user to type 'exit' to quit after a rejection
+
+        # 🔹 Allow user to type 'exit' to quit after a rejection
         if user_message and isinstance(user_message, str) and user_message.strip().lower() in ["exit", "quit", "cancel"]:
             session["step"] = "exit"
             return {
@@ -2603,25 +2381,291 @@ def get_bot_response(session_id: str, user_message: str = "", file_uploaded: dic
                 "waiting_for": "none"
             }
 
+        # =========================================================
+        # 🔹 OPTION 7.1: Manual Income Selection (CHECKED FIRST)
+        # =========================================================
+        if user_message and not file_uploaded:
+
+            income_map = {
+                "1": {"label": "Less than ₹1 Lakh",  "max": 100000,        "eligible": True},
+                "2": {"label": "₹1-2 Lakh",           "max": 200000,        "eligible": True},
+                "3": {"label": "₹2-2.5 Lakh",         "max": 250000,        "eligible": True},
+                "4": {"label": "More than ₹2.5 Lakh", "max": float('inf'), "eligible": False},
+            }
+
+            selected = income_map.get(user_message.strip())
+
+            if selected:
+                session["income_info"]["annual_income_display"] = selected["label"]
+                session["income_info"]["annual_income"] = selected["max"] if selected["eligible"] else 300000
+                session["income_info"]["source"] = "user_selected"
+
+                # ❌ Not eligible
+                if not selected["eligible"]:
+                    session["step"] = "completed"
+                    return {
+                        "response": get_translated_message(
+                            "eligibility_failure",
+                            user_language,
+                            reason="Annual income exceeds ₹2.50 Lakh"
+                        ),
+                        "type": "error",
+                        "waiting_for": "none"
+                    }
+
+                # ✅ Eligible → Move to bank step
+                session["step"] = "upload_bank_passbook"
+
+                return {
+                    "response": get_translated_message(
+                        "income_manual_success",
+                        user_language
+                    ),
+                    "type": "success",
+                    "waiting_for": "bank_passbook_upload"
+                }
+
+
+        # =========================================================
+        # 🔹 OPTION 7.2: Upload Income Certificate 
+        # =========================================================
         if file_uploaded and file_uploaded.get("doc_type") == "income_certificate":
+
             expected_name = session["personal_info"].get("name", "")
             application_id = session.get("application_id")
             doc_type = "income_certificate"
-            
+
             blob_url = upload_to_blob(
                 file_uploaded["content"],
                 application_id,
                 "income_certificate",
                 file_uploaded["extension"]
             )
-            
+
             if not blob_url:
-                response = {
+                return {
                     "response": "❌ Upload failed",
                     "type": "error",
                     "waiting_for": "income_certificate_upload"
                 }
-            else:
+
+            result = doc_intelligence.analyze_document(
+                file_uploaded["content"],
+                file_uploaded["extension"],
+                doc_type,
+                blob_url,
+                expected_name,
+                user_language
+            )
+
+            if not result.get("is_valid"):
+                return {
+                    "response": result.get("validation_error"),
+                    "type": "error",
+                    "waiting_for": "income_certificate_upload"
+                }
+
+            # ------------------------------
+            # 🔹 YOUR EXISTING INCOME LOGIC
+            # ------------------------------
+
+            fields = result.get("fields", {})
+            session["income_info"]["certificate_number"] = fields.get("certificate_number", "")
+
+            raw_income = ""
+            for key in [
+                "annual_income", "annual_income_amount", "annual_income_rupees",
+                "income", "amount", "amount_in_words"
+            ]:
+                val = fields.get(key)
+                if val:
+                    raw_income = str(val)
+                    break
+
+            if not raw_income and isinstance(fields, dict):
+                income_key_words = ['income', 'amount', 'annual', 'salary', 'rupee', 'rupees', 'रु', 'वार्षिक']
+                reject_key_words = ['certificate', 'cert', 'number', 'id', 'card', 'date', 'year', 'authority', 'issuer']
+
+                for k, v in fields.items():
+                    try:
+                        if not isinstance(v, str):
+                            continue
+                        s = v.strip()
+                        if not s:
+                            continue
+
+                        lname = str(k).lower()
+
+                        if any(word in lname for word in income_key_words):
+                            raw_income = s
+                            break
+
+                        if re.search(r'₹|\bRs\b|\bRs\.|rupee|रु', s, flags=re.IGNORECASE):
+                            raw_income = s
+                            break
+
+                        if re.fullmatch(r'[₹Rs.\s,\d]+', s, flags=re.IGNORECASE):
+                            if not any(word in lname for word in reject_key_words):
+                                raw_income = s
+                                break
+                    except Exception:
+                        continue
+
+            parsed_income = parse_income_amount(raw_income, result.get("raw_text", ""))
+
+            if not parsed_income:
+                return {
+                    "response": get_translated_message("income_not_found", user_language),
+                    "type": "error",
+                    "waiting_for": "income_certificate_upload"
+                }
+
+            display_income = format_currency(parsed_income)
+
+            if parsed_income > 250000:
+                session["income_info"]["annual_income"] = parsed_income
+                session["income_info"]["annual_income_display"] = display_income
+                session["income_info"]["source"] = "income_certificate"
+
+                return {
+                    "response": (
+                        get_translated_message("income_exceeds", user_language)
+                        + "\n\n"
+                        + get_translated_message("income_retry_prompt", user_language)
+                    ),
+                    "type": "error",
+                    "waiting_for": "income_certificate_upload"
+                }
+
+            session["documents"]["income_certificate"] = result
+            if "income_certificate" not in session["uploaded_docs"]:
+                session["uploaded_docs"].append("income_certificate")
+
+            session["income_info"]["annual_income"] = parsed_income
+            session["income_info"]["annual_income_display"] = display_income
+            session["income_info"]["issue_date"] = fields.get("issue_date", "")
+            session["income_info"]["source"] = "income_certificate"
+
+            session["step"] = "upload_bank_passbook"
+
+            return {
+                "response": get_translated_message(
+                    "income_success",
+                    user_language,
+                    cert_no=fields.get("certificate_number", "Extracted"),
+                    name=fields.get("holder_name", "Extracted"),
+                    income=display_income
+                ),
+                "type": "success",
+                "waiting_for": "bank_passbook_upload"
+            }
+
+        # =========================================================
+        # 🔹 DEFAULT PROMPT (Clear Dual Option)
+        # =========================================================
+        return {
+            "response": get_translated_message("income_selection", user_language),
+            "type": "text",
+            "waiting_for": "income_certificate_upload"
+        }
+
+
+    # ✅ STEP 8: UPLOAD BANK PASSBOOK
+    elif current_step == "upload_bank_passbook":
+
+            # =========================================================
+            # 🔹 OPTION 1: Manual Bank Entry (CHECKED FIRST)
+            # =========================================================
+            if user_message and not file_uploaded:
+
+                parts = [p.strip() for p in user_message.split(',')]
+
+                if len(parts) >= 3:
+
+                    bank_name      = parts[0].strip()
+                    account_number = re.sub(r'\s+', '', parts[1])
+                    ifsc_code      = parts[2].strip().upper().replace(" ", "")
+
+                    account_valid = account_number.isdigit() and 9 <= len(account_number) <= 18
+                    ifsc_valid    = bool(re.match(r'^[A-Z]{4}0[A-Z0-9]{6}$', ifsc_code))
+                    bank_valid    = len(bank_name) >= 3
+
+                    if account_valid and ifsc_valid and bank_valid:
+
+                        session["bank_info"] = {
+                            "bank_name":      bank_name,
+                            "account_number": account_number,
+                            "ifsc":           ifsc_code,
+                            "source":         "manual_input"
+                        }
+
+                        session["documents"]["bank_passbook"] = {
+                            "is_valid": True,
+                            "fields": {
+                                "bank_name":      bank_name,
+                                "account_number": account_number,
+                                "ifsc_code":      ifsc_code
+                            },
+                            "blob_url": ""
+                        }
+
+                        if "bank_passbook" not in session["uploaded_docs"]:
+                            session["uploaded_docs"].append("bank_passbook")
+
+                        session["step"] = "upload_photograph"
+
+                        return {
+                            "response": get_translated_message(
+                                "bank_manual_success",
+                                user_language,
+                                bank=bank_name,
+                                account=mask_account(account_number),
+                                ifsc=ifsc_code
+                            ),
+                            "type": "success",
+                            "waiting_for": "photograph_upload"
+                        }
+
+
+                    # ❌ Validation errors
+                    errors = []
+                    if not bank_valid:
+                        errors.append("- Bank name is too short")
+                    if not account_valid:
+                        errors.append(f"- Account number must be 9-18 digits (entered: {len(account_number)} chars)")
+                    if not ifsc_valid:
+                        errors.append(f"- IFSC code must match format XXXX0XXXXXX (entered: {ifsc_code})")
+
+                    return {
+                        "response": get_translated_message("bank_details_invalid_format", user_language) +
+                                    "\n\nErrors:\n" + "\n".join(errors),
+                        "type": "error",
+                        "waiting_for": "bank_passbook_upload"
+                    }
+
+            # =========================================================
+            # 🔹 OPTION 2: Upload Bank Passbook 
+            # =========================================================
+            if file_uploaded and file_uploaded.get("doc_type") == "bank_passbook":
+
+                expected_name  = session["personal_info"].get("name", "")
+                application_id = session.get("application_id")
+                doc_type       = "bank_passbook"
+
+                blob_url = upload_to_blob(
+                    file_uploaded["content"],
+                    application_id,
+                    "bank_passbook",
+                    file_uploaded["extension"]
+                )
+
+                if not blob_url:
+                    return {
+                        "response": "❌ Upload failed",
+                        "type": "error",
+                        "waiting_for": "bank_passbook_upload"
+                    }
+
                 result = doc_intelligence.analyze_document(
                     file_uploaded["content"],
                     file_uploaded["extension"],
@@ -2630,219 +2674,50 @@ def get_bot_response(session_id: str, user_message: str = "", file_uploaded: dic
                     expected_name,
                     user_language
                 )
-                
-                # ✅ ADD THIS ENTIRE SECTION
+
                 if not result.get("is_valid"):
-                    response = {
-                        "response": result.get("validation_error"),
-                        "type": "error",
-                        "waiting_for": "income_certificate_upload"
-                    }
-                else:
-                    fields = result.get("fields", {})
-                    session["income_info"]["certificate_number"] = fields.get("certificate_number", "")
-
-                    # Try several common field keys that might contain the income
-                    raw_income = ""
-                    for key in [
-                        "annual_income", "annual_income_amount", "annual_income_rupees",
-                        "income", "amount", "amount_in_words"
-                    ]:
-                        val = fields.get(key)
-                        if val:
-                            raw_income = str(val)
-                            break
-
-                    # If still empty, inspect all field values and pick the best candidate
-                    if not raw_income and isinstance(fields, dict):
-                        income_key_words = ['income', 'amount', 'annual', 'salary', 'rupee', 'rupees', 'रु', 'वार्षिक']
-                        reject_key_words = ['certificate', 'cert', 'number', 'id', 'card', 'date', 'year', 'authority', 'issuer']
-
-                        for k, v in fields.items():
-                            try:
-                                if not isinstance(v, str):
-                                    continue
-                                s = v.strip()
-                                if not s:
-                                    continue
-
-                                lname = str(k).lower()
-
-                                # Prefer keys that explicitly mention income/amount
-                                if any(word in lname for word in income_key_words):
-                                    raw_income = s
-                                    break
-
-                                # Prefer values that contain currency symbols or rupee words
-                                if re.search(r'₹|\bRs\b|\bRs\.|rupee|रु', s, flags=re.IGNORECASE):
-                                    raw_income = s
-                                    break
-
-                                # If value is mostly numeric (digits, commas, spaces) and key is not a reject-type, accept it
-                                if re.fullmatch(r'[₹Rs.\s,\d]+', s, flags=re.IGNORECASE):
-                                    if not any(word in lname for word in reject_key_words):
-                                        raw_income = s
-                                        break
-
-                                # Otherwise skip values like 'MH-IC-1234567' (contains letters/hyphens)
-                            except Exception:
-                                continue
-
-                    # Normalize numeric income using context-aware parsing
-                    parsed_income = parse_income_amount(raw_income, result.get("raw_text", ""))
-
-                    # If income could not be extracted, ask user to re-upload
-                    if not parsed_income:
-                        response = {
-                            "response": get_translated_message("income_not_found", user_language),
-                            "type": "error",
-                            "waiting_for": "income_certificate_upload"
-                        }
-                        session["step"] = "upload_income_certificate"
-                        return response
-
-                    # Final display value should match numeric income when available
-                    display_income = format_currency(parsed_income)
-
-                    # Detailed debug log for inspection
-                    logger.info(f"[IncomeParse] session={session_id} fields_keys={list(fields.keys()) if fields else []} raw_income='{raw_income}' parsed={parsed_income}")
-                    logger.debug(f"[IncomeParse] raw_text_snippet={result.get('raw_text','')[:500]}")
-
-                    # Also print to stdout so user running server sees immediate values
-                    try:
-                        print('\n[IncomeParse DEBUG] session=', session_id)
-                        print('[IncomeParse DEBUG] fields keys =', list(fields.keys()) if fields else [])
-                        print('[IncomeParse DEBUG] raw_income =', repr(raw_income))
-                        print('[IncomeParse DEBUG] parsed_income =', parsed_income)
-                        print('[IncomeParse DEBUG] raw_text_snippet =', result.get('raw_text','')[:500])
-                        print('\n')
-                    except Exception as _:
-                        logger.exception('Failed to print debug income parse info')
-
-                    # If income exceeds eligibility cap, reject upload and prompt retry or exit
-                    if parsed_income and parsed_income > 250000:
-                        # Debug: Log the parsed income and raw data to diagnose parsing issues
-                        logger.warning(f"⚠️ Income exceeds limit - Session: {session_id}, Parsed: {parsed_income}, Raw: '{raw_income}', fields={fields}")
-                        logger.warning(f"⚠️ Raw OCR Text (first 500 chars): {result.get('raw_text', '')[:500]}")
-
-                        # Mark that we are awaiting user's decision (re-upload or exit)
-                        session["awaiting_income_action"] = True
-                        session["income_info"]["source"] = "income_certificate"
-                        session["income_info"]["annual_income"] = parsed_income
-                        session["income_info"]["annual_income_display"] = display_income
-
-                        response = {
-                            "response": (
-                                get_translated_message("income_exceeds", user_language)
-                                + "\n\n"
-                                + get_translated_message("income_retry_prompt", user_language)
-                            ),
-                            "type": "error",
-                            "waiting_for": "income_certificate_upload"
-                        }
-                        # ensure we stay on same step so user can retry
-                        session["step"] = "upload_income_certificate"
-                    else:
-                        # Accept and store
-                        session["documents"]["income_certificate"] = result
-                        if "income_certificate" not in session["uploaded_docs"]:
-                            session["uploaded_docs"].append("income_certificate")
-                        session["income_info"]["annual_income"] = parsed_income
-                        session["income_info"]["annual_income_display"] = display_income
-                        session["income_info"]["issue_date"] = fields.get("issue_date", "")
-                        session["income_info"]["source"] = "income_certificate"
-                        # Clear awaiting flag on successful accept
-                        session.pop("awaiting_income_action", None)
-
-                        session["step"] = "upload_bank_passbook"
-                        response = {
-                            "response": get_translated_message(
-                                "income_success",
-                                user_language,
-                                cert_no=fields.get("certificate_number", "Extracted"),
-                                name=fields.get("holder_name", "Extracted"),
-                                income=session["income_info"].get("annual_income_display", "Extracted")
-                            ),
-                            "type": "success",
-                            "waiting_for": "bank_passbook_upload"
-                        }
-        else:
-            # ✅ ADD THIS ELSE BLOCK TOO
-            response = {
-                "response": get_translated_message("upload_prompt", user_language, doc="Income Certificate"),
-                "type": "text",
-                "waiting_for": "income_certificate_upload"
-            }
-    
-    # ✅ STEP 9: UPLOAD BANK PASSBOOK
-    elif current_step == "upload_bank_passbook":
-        if file_uploaded and file_uploaded.get("doc_type") == "bank_passbook":
-            expected_name = session["personal_info"].get("name", "")
-            application_id = session.get("application_id")
-            doc_type = "bank_passbook"  # ✅ ADD THIS LINE
-            
-            blob_url = upload_to_blob(
-                file_uploaded["content"],
-                application_id,
-                "bank_passbook",
-                file_uploaded["extension"]
-            )
-            
-            if not blob_url:
-                response = {
-                    "response": "❌ Upload failed",
-                    "type": "error",
-                    "waiting_for": "bank_passbook_upload"
-                }
-            else:
-                result = doc_intelligence.analyze_document(
-                file_uploaded["content"],
-                file_uploaded["extension"],
-                doc_type,
-                blob_url,
-                expected_name,
-                user_language
-            )
-                
-                if not result.get("is_valid"):
-                    response = {
+                    return {
                         "response": result.get("validation_error"),
                         "type": "error",
                         "waiting_for": "bank_passbook_upload"
                     }
-                else:
-                    session["documents"]["bank_passbook"] = result
+
+                session["documents"]["bank_passbook"] = result
+                if "bank_passbook" not in session["uploaded_docs"]:
                     session["uploaded_docs"].append("bank_passbook")
-                    
-                    fields = result.get("fields", {})
-                    session["bank_info"]["account_number"] = fields.get("account_number", "")
-                    session["bank_info"]["ifsc"] = fields.get("ifsc_code", "")
-                    session["bank_info"]["bank_name"] = fields.get("bank_name", "")
-                    
-                    session["step"] = "upload_photograph"
-                    
-                    account_display = mask_account(fields.get("account_number", ""))
-                    
-                    response = {
-                        "response": get_translated_message(
-                            "bank_success",
-                            user_language,
-                            holder=fields.get("account_holder_name", "Extracted"),
-                            account=account_display,
-                            ifsc=fields.get("ifsc_code", "Extracted"),
-                            bank=fields.get("bank_name", "Extracted")
-                        ),
-                        "type": "success",
-                        "waiting_for": "photograph_upload"
-                    }
-        else:
-            response = {
+
+                fields = result.get("fields", {})
+
+                session["bank_info"]["account_number"] = fields.get("account_number", "")
+                session["bank_info"]["ifsc"]           = fields.get("ifsc_code", "")
+                session["bank_info"]["bank_name"]      = fields.get("bank_name", "")
+
+                session["step"] = "upload_photograph"
+
+                return {
+                    "response": get_translated_message(
+                        "bank_success",
+                        user_language,
+                        holder=fields.get("account_holder_name", "Extracted"),
+                        account=mask_account(fields.get("account_number", "")),
+                        ifsc=fields.get("ifsc_code", "Extracted"),
+                        bank=fields.get("bank_name", "Extracted")
+                    ),
+                    "type": "success",
+                    "waiting_for": "photograph_upload"
+                }
+
+            # =========================================================
+            # 🔹 DEFAULT PROMPT (Clear Dual Option)
+            # =========================================================
+            return {
                 "response": get_translated_message("upload_prompt", user_language, doc="Bank Passbook"),
                 "type": "text",
                 "waiting_for": "bank_passbook_upload"
             }
-    
-    # ✅ STEP 10: UPLOAD PHOTOGRAPH
+
+
+    # ✅ STEP 9: UPLOAD PHOTOGRAPH
     elif current_step == "upload_photograph":
         if file_uploaded and file_uploaded.get("doc_type") == "photograph":
             application_id = session.get("application_id")
@@ -2898,6 +2773,7 @@ def get_bot_response(session_id: str, user_message: str = "", file_uploaded: dic
                     aadhaar=aadhaar_masked,
                     pan=pan_masked,
                     marital=marital,
+                    mobile=mobile,
                     email=email,
                     address=address,
                     account=account_masked,
@@ -2918,7 +2794,7 @@ def get_bot_response(session_id: str, user_message: str = "", file_uploaded: dic
                 "waiting_for": "photograph_upload"
             }
     
-    # ✅ STEP 11: FINAL REVIEW
+    # ✅ STEP 10: FINAL REVIEW
     elif current_step == "final_review":
         if user_message.upper() == "YES":
             session["step"] = "declaration"
@@ -2940,7 +2816,7 @@ def get_bot_response(session_id: str, user_message: str = "", file_uploaded: dic
                 "waiting_for": "review_confirmation"
             }
     
-    # ✅ STEP 12: DECLARATION
+    # ✅ STEP 11: DECLARATION
     elif current_step == "declaration":
         if user_message.upper() == "I AGREE":
             session["step"] = "submit_application"
@@ -2957,7 +2833,7 @@ def get_bot_response(session_id: str, user_message: str = "", file_uploaded: dic
                 "waiting_for": "declaration_confirm"
             }
     
-    # ✅ STEP 13: SUBMIT APPLICATION
+    # ✅ STEP 12: SUBMIT APPLICATION
     elif current_step == "submit_application":
         if user_message.upper() == "SUBMIT":
             session["step"] = "processing"
@@ -3085,7 +2961,7 @@ def get_bot_response(session_id: str, user_message: str = "", file_uploaded: dic
                 "waiting_for": "final_submit"
             }
     
-    # ✅ STEP 14: COMPLETED
+    # ✅ STEP 13: COMPLETED
     elif current_step == "completed":
         response = {
             "response": get_translated_message("restart_prompt", user_language, app_id=session.get('application_id', 'N/A')),
@@ -3164,3 +3040,5 @@ async def health_check():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=5000)
+
+
