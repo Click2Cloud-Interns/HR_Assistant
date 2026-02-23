@@ -26,14 +26,8 @@ from database import (
     get_beneficiary_details,
     get_beneficiary_transactions
 )
-# --------------------------------------------------
-# Load ENV
-# --------------------------------------------------
 load_dotenv()
 
-# --------------------------------------------------
-# Azure OpenAI
-# --------------------------------------------------
 AZURE_CLIENT = AzureOpenAI(
     api_key=os.getenv("AZURE_OPENAI_API_KEY"),
     api_version=os.getenv("AZURE_OPENAI_API_VERSION"),
@@ -41,15 +35,9 @@ AZURE_CLIENT = AzureOpenAI(
 )
 AZURE_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT")
 
-# --------------------------------------------------
-# Azure Storage
-# --------------------------------------------------
 AZURE_SA_NAME = os.getenv("AZURE_SA_NAME")
 AZURE_SA_ACCESSKEY = os.getenv("AZURE_SA_ACCESSKEY")
 
-# --------------------------------------------------
-# Month Map
-# --------------------------------------------------
 MONTH_MAP = {
     "january": 1, "february": 2, "march": 3, "april": 4,
     "may": 5, "june": 6, "july": 7, "august": 8,
@@ -57,8 +45,6 @@ MONTH_MAP = {
 }
 
 def validate_post_registration_query(user_message: str) -> dict:
-    """Check if query is relevant to post-registration"""
-    
     validation_prompt = f"""
 You are a query validator. Determine if this question is about POST-REGISTRATION topics ONLY.
 
@@ -86,7 +72,6 @@ Return ONLY valid JSON with no additional text:
   "reason": "brief reason"
 }}
 """
-    
     try:
         response = AZURE_CLIENT.chat.completions.create(
             model=AZURE_DEPLOYMENT,
@@ -97,59 +82,31 @@ Return ONLY valid JSON with no additional text:
             temperature=0,
             max_tokens=100
         )
-        
-        # Get the response content
         content = response.choices[0].message.content.strip()
-        
-        # Remove markdown code blocks if present
         if content.startswith("```"):
-            # Remove ```json or ``` from start
             content = content.split("\n", 1)[1] if "\n" in content else content[3:]
-            # Remove trailing ```
             content = content.rsplit("```", 1)[0].strip()
-        
-        # Parse JSON
         result = json.loads(content)
-        
-        # Validate structure
         if "is_valid" not in result:
-            print(f"⚠️ Invalid validation response structure: {result}")
-            # Default to allowing the query if validation fails
-            return {
-                "is_valid": True,
-                "rejection_messages": {}
-            }
-        
+            return {"is_valid": True, "rejection_messages": {}}
     except json.JSONDecodeError as e:
         print(f"❌ JSON parsing error in validation: {e}")
-        print(f"Raw response: {response.choices[0].message.content}")
-        # Default to allowing the query if validation fails
-        return {
-            "is_valid": True,
-            "rejection_messages": {}
-        }
+        return {"is_valid": True, "rejection_messages": {}}
     except Exception as e:
         print(f"❌ Validation error: {e}")
-        # Default to allowing the query if validation fails
-        return {
-            "is_valid": True,
-            "rejection_messages": {}
-        }
-    
+        return {"is_valid": True, "rejection_messages": {}}
+
     rejection_messages = {
         "hindi": "मैं केवल आवेदन की स्थिति, लेनदेन इतिहास और दस्तावेज़ सत्यापन में मदद कर सकता हूं। कृपया इन विषयों के बारे में पूछें।",
         "marathi": "मी फक्त अर्जाची स्थिती, व्यवहार इतिहास आणि कागदपत्र सत्यापनासाठी मदत करू शकतो. कृपया या विषयांबद्दल विचारा.",
         "english": "I can only help with application status, transaction history, and document verification. Please ask about these topics."
     }
-    
     return {
         "is_valid": result.get("is_valid", True),
         "rejection_messages": rejection_messages
     }
 
-# --------------------------------------------------
-# FastAPI App
-# --------------------------------------------------
+
 app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
@@ -158,23 +115,37 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --------------------------------------------------
-# Session Memory
-# --------------------------------------------------
 SESSION_HISTORY = {}
 SESSION_CONSENT = {}
 
-# --------------------------------------------------
-# Request Schema
-# --------------------------------------------------
+
 class ChatRequest(BaseModel):
     message: str
-    aadhaar_number: Optional[str] = None  
+    aadhaar_number: Optional[str] = None
     session_id: str
     language: str = "english"
-# --------------------------------------------------
-# LLM Chat
-# --------------------------------------------------
+
+
+def mark_dpip_done(session_id: str):
+    """
+    Pre-mark DPIP as accepted for this session.
+    Called from main.py before calling post_chat to bypass the
+    DPIP consent prompt (main.py already handles its own DPIP flow).
+    
+    Usage in main.py (import at top):
+        from api.post_registration import mark_dpip_done
+    
+    Then before calling post_chat:
+        mark_dpip_done(session_id)
+        res = post_chat(ChatRequest(...))
+    """
+    if session_id not in SESSION_CONSENT:
+        SESSION_CONSENT[session_id] = {}
+    SESSION_CONSENT[session_id]["dpip_accepted"] = True
+    SESSION_CONSENT[session_id]["dpip_done"] = True
+    print(f"✅ DPIP pre-marked as done for session: {session_id}")
+
+
 def call_llm(prompt: str) -> str:
     system_prompt = (
         "You are a POST-REGISTRATION database assistant for Ladli Behna Yojana.\n"
@@ -191,19 +162,15 @@ def call_llm(prompt: str) -> str:
         "- If the user asks whether a specific document (bank account, mobile number, or Aadhaar) "
         "is linked, seeded, updated, or verified correctly AND the user has NOT yet provided "
         "that document value, you MUST ask ONLY for that same document\n"
-
         "- HOWEVER, if the user HAS provided the document value in the conversation "
         "or in the current message, AND the database context contains the corresponding value, "
         "you MUST compare the user-provided value with the database value\n"
-
         "- If both values match, clearly confirm that it is linked correctly\n"
         "- If they do not match, clearly state that it is not linked correctly\n"
-
         "- Never ask again for the document once it has been provided\n"
         "- Never ask for Aadhaar when the question is about bank account or mobile number\n"
         "- Do NOT ask for last 4 digits or partial identifiers\n"
     )
-
     response = AZURE_CLIENT.chat.completions.create(
         model=AZURE_DEPLOYMENT,
         messages=[
@@ -213,12 +180,9 @@ def call_llm(prompt: str) -> str:
         temperature=0.3,
         max_tokens=800
     )
-
     return response.choices[0].message.content.strip()
 
-# --------------------------------------------------
-# LLM Intent Extraction
-# --------------------------------------------------
+
 def extract_transaction_intent_llm(user_prompt: str):
     intent_prompt = f"""
 Extract transaction intent from the user message.
@@ -255,9 +219,7 @@ JSON:
     )
     return json.loads(response.choices[0].message.content)
 
-# --------------------------------------------------
-# Upload Chart to Azure Blob
-# --------------------------------------------------
+
 def upload_chart(df: pd.DataFrame):
     print("Generating chart...")
     import matplotlib
@@ -280,24 +242,18 @@ def upload_chart(df: pd.DataFrame):
         account_url=f"https://{AZURE_SA_NAME}.blob.core.windows.net",
         credential=AZURE_SA_ACCESSKEY
     )
-
     container_name = "charts"
     container_client = blob_service.get_container_client(container_name)
-
-    # Ensure container exists
     try:
         container_client.create_container()
     except Exception:
         pass
 
     blob_client = container_client.get_blob_client(file_name)
-
     with open(file_name, "rb") as data:
         blob_client.upload_blob(data, overwrite=True)
-
     os.remove(file_name)
 
-    #  Generate SAS URL (READ access for 1 hour)
     sas_token = generate_blob_sas(
         account_name=AZURE_SA_NAME,
         container_name=container_name,
@@ -306,15 +262,9 @@ def upload_chart(df: pd.DataFrame):
         permission=BlobSasPermissions(read=True),
         expiry=datetime.utcnow() + timedelta(hours=1000)
     )
-
-    sas_url = f"https://{AZURE_SA_NAME}.blob.core.windows.net/{container_name}/{file_name}?{sas_token}"
-
-    return sas_url
+    return f"https://{AZURE_SA_NAME}.blob.core.windows.net/{container_name}/{file_name}?{sas_token}"
 
 
-# --------------------------------------------------
-# Chat API
-# --------------------------------------------------
 @app.post("/post-application-chat")
 def post_chat(req: ChatRequest):
     session_id = req.session_id
@@ -324,7 +274,6 @@ def post_chat(req: ChatRequest):
 
     import re
 
-    # Normalize language values (handle 'mr', 'hi', mixed case)
     language_norm = (language or "english").strip().lower()
     if language_norm in ["mr", "mar", "marathi"]:
         language_norm = "marathi"
@@ -333,7 +282,6 @@ def post_chat(req: ChatRequest):
     else:
         language_norm = "english"
 
-    # If message contains Devanagari script, default to Marathi
     if language_norm == "english" and re.search(r"[\u0900-\u097F]", user_message or ""):
         language_norm = "marathi"
     elif language_norm == "english":
@@ -344,29 +292,29 @@ def post_chat(req: ChatRequest):
             if re.search(r"[\u0900-\u097F]", last_text):
                 language_norm = "marathi"
 
-    # ✅ ADD THIS FIRST: Skip validation if user is just providing Aadhaar number
     is_aadhaar_only = bool(re.match(r'^\d{12}$', user_message.strip()))
 
-    # If user typed Aadhaar in the message, always prefer it over any stale request value
     if is_aadhaar_only:
         message_aadhaar = user_message.strip()
         if not aadhaar_number or aadhaar_number != message_aadhaar:
             aadhaar_number = message_aadhaar
-    
-    # ✅ STEP 0: DPIP CONSENT (must come before everything)
+
+    # ── STEP 0: DPIP CONSENT ──
+    # This is only reached when post_chat is called directly via HTTP (/post-application-chat).
+    # When called from main.py, mark_dpip_done() is called first, so this block is skipped.
     if session_id not in SESSION_CONSENT:
         SESSION_CONSENT[session_id] = {"dpip_accepted": False, "dpip_done": False}
-    
+
     if not SESSION_CONSENT[session_id].get("dpip_done"):
         user_input = user_message.strip().lower()
         yes_words = ["yes", "y", "ho", "होय", "हां", "haan", "हो"]
         no_words = ["no", "n", "nahi", "नाही", "नहीं"]
-        
+
         if not SESSION_CONSENT[session_id].get("dpip_accepted") and user_input not in yes_words and user_input not in no_words:
             dpip_messages = {
-                "marathi": """आपली ओळख पडताळण्यासाठी आम्हाला आपली वैयक्तिक माहिती (आधार क्रमांक इ.) गोळा करणे आवश्यक आहे.\n\nही माहिती Digital Personal Data Protection Act (DPDP) नियमांनुसार सुरक्षित ठेवली जाईल.\n\nआपण माहिती सामायिक करण्यास संमती देता का?\n\nकृपया उत्तर द्या: होय / नाही""",
-                "hindi": """आपकी पहचान सत्यापित करने के लिए हमें आपकी व्यक्तिगत जानकारी (आधार नंबर आदि) एकत्र करनी होगी।\n\nयह जानकारी Digital Personal Data Protection Act (DPDP) नियमों के अनुसार सुरक्षित रखी जाएगी।\n\nक्या आप जानकारी साझा करने की सहमति देते हैं?\n\nकृपया उत्तर दें: हां / नहीं""",
-                "english": """To verify your identity, we need to collect your personal information (Aadhaar number, etc.).\n\nThis information will be kept secure according to Digital Personal Data Protection Act (DPDP) rules.\n\nDo you consent to share your information for verification?\n\nPlease answer: Yes / No"""
+                "marathi": "आपली ओळख पडताळण्यासाठी आम्हाला आपली वैयक्तिक माहिती (आधार क्रमांक इ.) गोळा करणे आवश्यक आहे.\n\nही माहिती Digital Personal Data Protection Act (DPDP) नियमांनुसार सुरक्षित ठेवली जाईल.\n\nआपण माहिती सामायिक करण्यास संमती देता का?\n\nकृपया उत्तर द्या: होय / नाही",
+                "hindi": "आपकी पहचान सत्यापित करने के लिए हमें आपकी व्यक्तिगत जानकारी (आधार नंबर आदि) एकत्र करनी होगी।\n\nयह जानकारी Digital Personal Data Protection Act (DPDP) नियमों के अनुसार सुरक्षित रखी जाएगी।\n\nक्या आप जानकारी साझा करने की सहमति देते हैं?\n\nकृपया उत्तर दें: हां / नहीं",
+                "english": "To verify your identity, we need to collect your personal information (Aadhaar number, etc.).\n\nThis information will be kept secure according to Digital Personal Data Protection Act (DPDP) rules.\n\nDo you consent to share your information for verification?\n\nPlease answer: Yes / No"
             }
             if session_id not in SESSION_HISTORY:
                 SESSION_HISTORY[session_id] = []
@@ -378,12 +326,11 @@ def post_chat(req: ChatRequest):
                 },
                 "mode": "post_application"
             }
-        
+
         elif user_input in yes_words:
             SESSION_CONSENT[session_id]["dpip_accepted"] = True
             SESSION_CONSENT[session_id]["dpip_done"] = True
-            # Fall through - now ask for Aadhaar
-        
+
         elif user_input in no_words:
             SESSION_CONSENT[session_id]["dpip_done"] = True
             end_messages = {
@@ -401,10 +348,37 @@ def post_chat(req: ChatRequest):
                 },
                 "mode": "post_application"
             }
-        
+
+    # ── STEP 1: AADHAAR CHECK ──
+    # When called from main.py: aadhaar_number is always set (STEP 4.3 validates it first).
+    # When called via HTTP directly: ask user if missing.
+    if not aadhaar_number:
+        aadhaar_request_messages = {
+            "marathi": "कृपया तुमचा १२ अंकी आधार क्रमांक प्रविष्ट करा.",
+            "hindi": "कृपया अपना १२ अंकी आधार नंबर दर्ज करें।",
+            "english": "Please enter your 12-digit Aadhaar number."
+        }
+        if session_id not in SESSION_HISTORY:
+            SESSION_HISTORY[session_id] = []
+        return {
+            "response": {
+                "response": aadhaar_request_messages.get(language_norm, aadhaar_request_messages["english"]),
+                "transaction_chart_url": None,
+                "history": SESSION_HISTORY.get(session_id, [])[-5:]
+            },
+            "mode": "post_application_awaiting_aadhaar"
+        }
+
+    # ── STEP 2: QUERY VALIDATION ──
+    # Skip for pure Aadhaar-only messages (just show status directly)
+    if not is_aadhaar_only:
         validation = validate_post_registration_query(user_message)
         if not validation["is_valid"]:
-            rejection_msg = validation["rejection_messages"].get(language_norm, validation["rejection_messages"]["english"])
+            rejection_msg = validation["rejection_messages"].get(
+                language_norm, validation["rejection_messages"]["english"]
+            )
+            if session_id not in SESSION_HISTORY:
+                SESSION_HISTORY[session_id] = []
             return {
                 "response": {
                     "response": rejection_msg,
@@ -413,204 +387,98 @@ def post_chat(req: ChatRequest):
                 },
                 "mode": "post_application"
             }
-    
-    # ✅ ADD THIS: Step 2 - Check if Aadhaar is provided
-    if not aadhaar_number:
-        aadhaar_request_messages = {
-            "hindi": "कृपया अपना 12 अंकी आधार नंबर दर्ज करें।",
-            "marathi": "कृपया तुमचा 12 अंकी आधार क्रमांक प्रविष्ट करा.",
-            "english": "Please enter your 12-digit Aadhaar number."
-        }
-        
-        aadhaar_request_messages = {
-            "marathi": """कृपया खालीलपैकी एक करा:
 
-- आपला १२ अंकी आधार क्रमांक टाइप करा
-- किंवा आधार कार्डचा फोटो अपलोड करा
-
-📸 फोटो अपलोड करताना: आधार कार्डची पुढची (Front) आणि मागची (Back) बाजू एकाच फोटोमध्ये एकत्र करून अपलोड करा.""",
-            "hindi": """कृपया निम्नलिखित में से एक करें:
-
-- अपना १२ अंकी आधार नंबर टाइप करें
-- या आधार कार्ड की फोटो अपलोड करें
-
-📸 फोटो अपलोड करते समय: आधार कार्ड का आगे (Front) और पीछे (Back) दोनों भाग एक ही फोटो में एक साथ अपलोड करें।""",
-            "english": """Please do one of the following:
-
-- Type your 12-digit Aadhaar number
-- Or upload a photo of your Aadhaar Card
-
-📸 When uploading: Combine both the Front and Back side of your Aadhaar Card into a single image before uploading."""
-        }
-        request_msg = aadhaar_request_messages.get(language_norm, aadhaar_request_messages["english"])
-            
-        return {
-            "response": {
-                "response": request_msg,
-                "transaction_chart_url": None,
-                "history": SESSION_HISTORY.get(session_id, [])[-5:]
-            },
-            "mode": "post_application_awaiting_aadhaar"
-        }
-    
-    # Rest of your existing code continues from here...
     if session_id not in SESSION_HISTORY:
         SESSION_HISTORY[session_id] = []
-    
-    # ✅ STEP 0: DPIP CONSENT (before anything else)
-    if session_id not in SESSION_CONSENT:
-        SESSION_CONSENT[session_id] = {"dpip_accepted": False, "dpip_done": False}
-    
-    if not SESSION_CONSENT[session_id].get("dpip_done"):
-        user_input = user_message.strip().lower()
-        yes_words = ["yes", "y", "ho", "होय", "हां", "haan", "हो"]
-        no_words = ["no", "n", "nahi", "नाही", "नहीं"]
-        
-        if not SESSION_CONSENT[session_id].get("dpip_accepted") and user_input not in yes_words and user_input not in no_words:
-            # Show consent message
-            dpip_messages = {
-                "marathi": """आपली ओळख पडताळण्यासाठी आम्हाला आपली वैयक्तिक माहिती (आधार क्रमांक इ.) गोळा करणे आवश्यक आहे.
 
-ही माहिती Digital Personal Data Protection Act (DPDP) नियमांनुसार सुरक्षित ठेवली जाईल.
-
-आपण माहिती सामायिक करण्यास संमती देता का?
-
-कृपया उत्तर द्या: होय / नाही""",
-                "hindi": """आपकी पहचान सत्यापित करने के लिए हमें आपकी व्यक्तिगत जानकारी (आधार नंबर आदि) एकत्र करनी होगी।
-
-यह जानकारी Digital Personal Data Protection Act (DPDP) नियमों के अनुसार सुरक्षित रखी जाएगी।
-
-क्या आप जानकारी साझा करने की सहमति देते हैं?
-
-कृपया उत्तर दें: हां / नहीं""",
-                "english": """To verify your identity, we need to collect your personal information (Aadhaar number, etc.).
-
-This information will be kept secure according to Digital Personal Data Protection Act (DPDP) rules.
-
-Do you consent to share your information for verification?
-
-Please answer: Yes / No"""
-            }
-            return {
-                "response": {
-                    "response": dpip_messages.get(language_norm, dpip_messages["english"]),
-                    "transaction_chart_url": None,
-                    "history": []
-                },
-                "mode": "post_application"
-            }
-        
-        elif user_input in yes_words:
-            SESSION_CONSENT[session_id]["dpip_accepted"] = True
-            SESSION_CONSENT[session_id]["dpip_done"] = True
-            # Fall through to ask for Aadhaar below
-        
-        elif user_input in no_words:
-            SESSION_CONSENT[session_id]["dpip_done"] = True
-            end_messages = {
-                "marathi": "धन्यवाद. आपण कधीही परत येऊ शकता.\n\nलाडकी बहिण योजना – आपल्या सशक्तीकरणासाठी.",
-                "hindi": "धन्यवाद। आप कभी भी वापस आ सकते हैं।\n\nलाडकी बहन योजना – आपके सशक्तिकरण के लिए।",
-                "english": "Thank you. You can come back anytime.\n\nLadki Bahin Yojana – For your empowerment."
-            }
-            return {
-                "response": {
-                    "response": end_messages.get(language_norm, end_messages["english"]),
-                    "transaction_chart_url": None,
-                    "history": []
-                },
-                "mode": "post_application"
-            }
-        
+    # ── STEP 3: DB LOOKUP ──
     db_context = ""
     chart_url = None
 
-    # Now this 'if aadhaar_number:' is guaranteed to be True
-    if aadhaar_number:
-        beneficiary_id = get_beneficiary_by_aadhaar(aadhaar_number)
-        if not beneficiary_id:
-            if language_norm == "hindi":
-                return {
-                    "response": "इस आधार नंबर से कोई अर्ज नहीं मिला। एक बार चेक कर लीजिए कि नंबर सही है या नहीं। अगर अभी अर्ज नहीं किया है तो पहले वो करना होगा।",
-                    "history": SESSION_HISTORY[session_id]
-                }
-            elif language_norm == "marathi":
-                return {
-                    "response": "या आधार क्रमांकावर कोणताही अर्ज आढळला नाही. कृपया आधार क्रमांक पुन्हा तपासा. अर्ज केलेला नसेल तर कृपया प्रथम अर्ज करा.",
-                    "history": SESSION_HISTORY[session_id]
-                }
-            else:
-                return {
-                    "response": "I couldn't find any application with this Aadhaar number. Please check if the number is correct. If you haven't applied yet, you'll need to do that first.",
-                    "history": SESSION_HISTORY[session_id]
-                }
+    beneficiary_id = get_beneficiary_by_aadhaar(aadhaar_number)
+    if not beneficiary_id:
+        not_found = {
+            "marathi": "या आधार क्रमांकावर कोणताही अर्ज आढळला नाही. कृपया आधार क्रमांक पुन्हा तपासा. अर्ज केलेला नसेल तर कृपया प्रथम अर्ज करा.",
+            "hindi": "इस आधार नंबर से कोई अर्ज नहीं मिला। एक बार चेक कर लीजिए कि नंबर सही है या नहीं। अगर अभी अर्ज नहीं किया है तो पहले वो करना होगा।",
+            "english": "I couldn't find any application with this Aadhaar number. Please check if the number is correct. If you haven't applied yet, you'll need to do that first."
+        }
+        return {
+            "response": {
+                "response": not_found.get(language_norm, not_found["english"]),
+                "transaction_chart_url": None,
+                "history": SESSION_HISTORY[session_id]
+            },
+            "mode": "post_application"
+        }
 
-        print(f"Found BeneficiaryId: {beneficiary_id}")
+    print(f"Found BeneficiaryId: {beneficiary_id}")
 
-        beneficiary = get_beneficiary_details(beneficiary_id)
-        print("Beneficiary Details:", beneficiary)
-        transactions = get_beneficiary_transactions(beneficiary_id)
+    beneficiary = get_beneficiary_details(beneficiary_id)
+    print("Beneficiary Details:", beneficiary)
+    transactions = get_beneficiary_transactions(beneficiary_id)
 
-        # If user only provided Aadhaar (or just wants status), respond directly from DB
-        if is_aadhaar_only:
-            status = (beneficiary or {}).get("ApplicationStatus") or "UNKNOWN"
-            status_upper = str(status).upper()
-            status_messages = {
-                "marathi": f'तुमच्या अर्जाची स्थिती "{status_upper}" आहे.',
-                "hindi": f'आपके आवेदन की स्थिति "{status_upper}" है।',
-                "english": f'Your application status is "{status_upper}".'
-            }
-            return {
-                "response": {
-                    "response": status_messages.get(language_norm, status_messages["english"]),
-                    "transaction_chart_url": None,
-                    "history": SESSION_HISTORY.get(session_id, [])[-5:]
-                },
-                "mode": "post_application"
-            }
-        
-        transc_df = pd.DataFrame(transactions)
-        
-        if transc_df.empty or "TransactionDate" not in transc_df.columns:
-            print(f"⚠️ No transactions found or TransactionDate column missing for beneficiary {beneficiary_id}")
-            transc_df = pd.DataFrame(columns=["TransactionDate", "Amount", "PaymentMonth"])
-        else:
-            transc_df["TransactionDate"] = pd.to_datetime(transc_df["TransactionDate"])
+    # ── STEP 4: STATUS-ONLY SHORTCUT ──
+    # If user just typed/confirmed their Aadhaar number, show status directly
+    if is_aadhaar_only:
+        status = (beneficiary or {}).get("ApplicationStatus") or "UNKNOWN"
+        status_upper = str(status).upper()
+        status_messages = {
+            "marathi": f'तुमच्या अर्जाची स्थिती "{status_upper}" आहे.',
+            "hindi": f'आपके आवेदन की स्थिति "{status_upper}" है।',
+            "english": f'Your application status is "{status_upper}".'
+        }
+        return {
+            "response": {
+                "response": status_messages.get(language_norm, status_messages["english"]),
+                "transaction_chart_url": None,
+                "history": SESSION_HISTORY.get(session_id, [])[-5:]
+            },
+            "mode": "post_application"
+        }
 
-        intent = extract_transaction_intent_llm(user_message)
+    # ── STEP 5: TRANSACTION INTENT + CHART ──
+    transc_df = pd.DataFrame(transactions)
 
-        if intent["transaction_flag"] == 1:
-            if intent["last_n_months"]:
-                end_date = datetime.today()
-                start_date = end_date - relativedelta(months=intent["last_n_months"])
-                transc_df = transc_df[
-                    (transc_df["TransactionDate"] >= start_date) &
-                    (transc_df["TransactionDate"] <= end_date)
-                ]
+    if transc_df.empty or "TransactionDate" not in transc_df.columns:
+        print(f"⚠️ No transactions found for beneficiary {beneficiary_id}")
+        transc_df = pd.DataFrame(columns=["TransactionDate", "Amount", "PaymentMonth"])
+    else:
+        transc_df["TransactionDate"] = pd.to_datetime(transc_df["TransactionDate"])
 
-            elif intent["start_month"] and intent["end_month"]:
-                sm = MONTH_MAP[intent["start_month"]]
-                em = MONTH_MAP[intent["end_month"]]
-                transc_df["TxnMonth"] = transc_df["TransactionDate"].dt.month
-                transc_df = transc_df[
-                    (transc_df["TxnMonth"] >= sm) &
-                    (transc_df["TxnMonth"] <= em)
-                ]
+    intent = extract_transaction_intent_llm(user_message)
 
-            elif intent["month_list"]:
-                months = [MONTH_MAP[m] for m in intent["month_list"]]
-                transc_df["TxnMonth"] = transc_df["TransactionDate"].dt.month
-                transc_df = transc_df[transc_df["TxnMonth"].isin(months)]
+    if intent["transaction_flag"] == 1:
+        if intent["last_n_months"]:
+            end_date = datetime.today()
+            start_date = end_date - relativedelta(months=intent["last_n_months"])
+            transc_df = transc_df[
+                (transc_df["TransactionDate"] >= start_date) &
+                (transc_df["TransactionDate"] <= end_date)
+            ]
+        elif intent["start_month"] and intent["end_month"]:
+            sm = MONTH_MAP[intent["start_month"]]
+            em = MONTH_MAP[intent["end_month"]]
+            transc_df["TxnMonth"] = transc_df["TransactionDate"].dt.month
+            transc_df = transc_df[
+                (transc_df["TxnMonth"] >= sm) &
+                (transc_df["TxnMonth"] <= em)
+            ]
+        elif intent["month_list"]:
+            months = [MONTH_MAP[m] for m in intent["month_list"]]
+            transc_df["TxnMonth"] = transc_df["TransactionDate"].dt.month
+            transc_df = transc_df[transc_df["TxnMonth"].isin(months)]
 
-            chart_url = upload_chart(transc_df)
+        chart_url = upload_chart(transc_df)
 
-        db_context = f"""
+    db_context = f"""
 Beneficiary:
 {beneficiary}
 
 Transactions:
 {transc_df.to_dict(orient="records")}
 """
-        
+
+    # ── STEP 6: LLM RESPONSE ──
     last_5_history = SESSION_HISTORY[session_id][-5:]
 
     prompt = f"""
@@ -631,7 +499,6 @@ User question:
         "bot": bot_reply
     })
 
-    # ✅ Return in correct nested format (ONE level of "response")
     return {
         "response": {
             "response": bot_reply,
