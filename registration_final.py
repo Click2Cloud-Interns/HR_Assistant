@@ -1465,6 +1465,31 @@ doc_intelligence = DocumentIntelligence()
 
 
 # ============================================
+# Aadhaar Front/Back Detection 
+# ============================================
+
+
+def _has_both_sides(text: str) -> bool:
+    """Return True only if OCR text contains indicators from BOTH front AND back."""
+    t = text.lower()
+    front = [
+        bool(re.search(r'\d{4}\s?\d{4}\s?\d{4}', text)),
+        bool(re.search(r'\b(dob|date of birth|जन्म|born|year of birth|yob)\b', t)),
+        bool(re.search(r'\b(male|female|पुरुष|महिला|transgender)\b', t)),
+    ]
+    back = [
+        bool(re.search(r'\b(address|पत्ता)\b', t)),
+        bool(re.search(r'\b(s/o|d/o|w/o|c/o|son of|daughter of|wife of)\b', t)),
+        bool(re.search(r'\b(pin|pincode|dist|district|state|taluka|village|po )\b', t)),
+        bool(re.search(r'\b(uidai|unique identification|माझी ओळख|qr|barcode)\b', t)),
+    ]
+    has_front = sum(front) >= 2
+    has_back  = sum(back)  >= 1
+    print(f"  front={sum(front)}/3  back={sum(back)}/4")
+    return has_front and has_back
+
+
+# ============================================
 # HELPER FUNCTIONS
 # ============================================
 
@@ -1880,12 +1905,8 @@ def get_bot_response(session_id: str, user_message: str = "", file_uploaded: dic
             # ✅ Check both sides present: need address (back side) AND aadhaar number (front side)
             fields = result.get("fields", {})
             raw_text = result.get("raw_text", "")
-            has_front = bool(fields.get("aadhaar_number") or re.search(r'\d{12}', re.sub(r'\s', '', raw_text)))
-            has_back  = bool(fields.get("address") or any(
-                kw in raw_text.lower() for kw in ["s/o", "d/o", "w/o", "c/o", "house", "village", "dist", "pin", "state", "at post", "ward"]
-            ))
-
-            if not (has_front and has_back):
+            raw_text = result.get("raw_text", "")
+            if not _has_both_sides(raw_text):
                 return {
                     "response": get_translated_message("aadhaar_incomplete", user_language),
                     "type": "error",
